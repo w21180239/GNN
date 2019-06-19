@@ -7,118 +7,86 @@ import pandas as pd
 from torch_geometric.data import NeighborSampler,Data
 from torch_geometric.nn import SAGEConv
 from torch_geometric.utils import remove_self_loops
-from sklearn.preprocessing import Imputer, RobustScaler,StandardScaler
+from sklearn.preprocessing import Imputer, RobustScaler,MinMaxScaler, StandardScaler
+from torch_geometric.data import DataLoader
+import random
+from torch_geometric.nn import GATConv
 
-if os.path.exists('data.npz'):
-    data = torch.load('data.npz')
-else:
-    G = nx.read_gpickle('my_graph.gpickle')
-    if os.path.exists('sur_x.npy'):
-        x = np.load('sur_x.npy')
-        y = np.load('sur_y.npy')
-        data_df = pd.DataFrame(pd.read_csv('new_playerCharge-4.csv'))
-        id_list = np.array(data_df['openid'])
-    else:
-        data_df = pd.DataFrame(pd.read_csv('new_playerCharge-4.csv'))
-        id_list = list(data_df['openid'])
-        y = data_df['charge']
-        G = G.subgraph(id_list)
-        x = np.load('feature.npy')[id_list, 1:]
-        x = Imputer().fit_transform(x)
-        x = RobustScaler().fit_transform(x)
-        np.save('sur_x.npy', x)
-        np.save('sur_y.npy', y)
-    train_mask = np.array([0 for i in range(x.shape[0])])
-    val_mask = np.array([0 for i in range(x.shape[0])])
-    test_mask = np.array([0 for i in range(x.shape[0])])
-    for i in range(0, int(x.shape[0] * 0.8)):
-        train_mask[i] = 1
-    for i in range(int(x.shape[0] * 0.8), int(x.shape[0] * 0.9)):
-        val_mask[i] = 1
-    for i in range(int(x.shape[0] * 0.9), x.shape[0]):
-        test_mask[i] = 1
-
-    G = G.subgraph(list(id_list))
-    ori_key = list(G.node.keys())
-    ori_key.sort()
-    projection = {}
-    for i in range(len(id_list)):
-        projection[ori_key[i]] = i
-    edge_index = G.edges()
-    edge_index = [[projection[i[0]],projection[i[1]]] for i in edge_index]
-    edge_index = []
-    edge_index = torch.tensor(edge_index).t().contiguous()
-    edge_index = edge_index - edge_index.min()
-    edge_index, _ = remove_self_loops(edge_index)
-
-    x = torch.from_numpy(x).to(torch.float)
-    y = StandardScaler().fit_transform(y.reshape(-1, 1))           # transform
-    y = torch.from_numpy(y).to(torch.float)
-    train_mask =  torch.from_numpy(train_mask).to(torch.uint8)
-    val_mask =  torch.from_numpy(val_mask).to(torch.uint8)
-    test_mask =  torch.from_numpy(test_mask).to(torch.uint8)
-
-    data = Data(edge_index=edge_index, x=x, y=y, train_mask=train_mask, val_mask=val_mask,
-                test_mask=test_mask)
-    torch.save(data, 'data.npz')
-loader = NeighborSampler(
-    data,
-    size=[100, 100],
-    num_hops=2,
-    batch_size=256,
-    shuffle=True,
-    add_self_loops=True)
+batchsize = 1
 
 
 class Net(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Net, self).__init__()
-        self.conv1 = SAGEConv(in_channels, 32)
-        self.conv2 = SAGEConv(32, out_channels)
+        self.conv1 = GATConv(in_channels,8, heads=8, dropout=0.6)
+        self.conv2 = GATConv(8 * 8, 1, heads=1, concat=True, dropout=0.6)
 
 
 
-    def forward(self, x, data_flow):
-        data = data_flow[0]
-        x = x[data.n_id]
-        x = F.relu(self.conv1(x, data.edge_index,size=data.size))
-        x = F.dropout(x, training=self.training)
-        data = data_flow[1]
-        x = self.conv2(x, data.edge_index,size=data.size)
+    def forward(self, x,edge_index):
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = F.elu(self.conv1(x, edge_index))
+        x = F.dropout(x, p=0.6, training=self.training)
+        x = self.conv2(x, edge_index)
         return x
 
 
+train_data_list = torch.load('subway_data_train.npz')
+val_data_list = torch.load('subway_data_val.npz')
+y_scaler= StandardScaler()
+y = torch.cat([data.y for data in train_data_list], 0)
+y_scaler.fit(y)
+for data in train_data_list:
+    y =y_scaler.transform(data.y)
+    data.y = torch.from_numpy(y).to(torch.float)
+for data in val_data_list:
+    y =y_scaler.transform(data.y)
+    data.y = torch.from_numpy(y).to(torch.float)
+train_loader = DataLoader(
+    train_data_list, batch_size=batchsize, shuffle=True)
+
+val_loader = DataLoader(
+    val_data_list, batch_size=batchsize, shuffle=True)
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Net(67, 1).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01, weight_decay=5e-4)
+model = Net(train_data_list[0].num_features, train_data_list[0].y.size(1)).to(device)
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001, weight_decay=5e-4)
 
 
-def train():
+def train(loader):
     model.train()
 
-    total_loss = 0
-    for data_flow in loader(data.train_mask):
+    total_loss = []
+    for data in loader:
         optimizer.zero_grad()
-        out = model(data.x.to(device), data_flow.to(device))
-        loss = F.mse_loss(out, data.y[data_flow.n_id].to(device))
+        out = model(data.x.to(device), data.edge_index.to(device))
+        loss = F.mse_loss(out, data.y.to(device))
         loss.backward()
         optimizer.step()
-        total_loss += loss.item() * data_flow.batch_size
-    return total_loss / data.train_mask.sum().item()
+        total_loss.append(loss.item())
+    total_loss = y_scaler.inverse_transform(total_loss)
+    total_loss = total_loss.sum()
+    return total_loss / len(loader.dataset)
 
 
-def test(mask):
+def test(loader):
     model.eval()
 
-    loss = 0
-    for data_flow in loader(mask):
-        pred = model(data.x.to(device), data_flow.to(device))
-        loss += F.mse_loss(pred, data.y[data_flow.n_id].to(device))* data_flow.batch_size
-    return loss / data.test_mask.sum().item()
+    total_loss = []
+    for data in loader:
+        optimizer.zero_grad()
+        out = model(data.x.to(device), data.edge_index.to(device))
+        loss = F.mse_loss(out, data.y.to(device))
+        loss.backward()
+        optimizer.step()
+        total_loss.append(loss.item())
+    total_loss = y_scaler.inverse_transform(total_loss)
+    total_loss = total_loss.sum()
+    return total_loss / len(loader.dataset)
 
 
 for epoch in range(1, 1001):
-    loss = train()
-    test_acc = test(data.test_mask)
+    loss = train(train_loader)
+    test_acc = test(val_loader)
     print('Epoch: {:02d}, Loss: {:.4f}, Test: {:.4f}'.format(
         epoch, loss, test_acc))

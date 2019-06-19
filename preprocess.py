@@ -19,25 +19,25 @@ G.add_edges_from(df.values)
 nx.write_gpickle(G,'my_graph.gpickle')
 exit(0)
 
-# G = nx.Graph()
-# labels = range(81)
-# data_df = pd.DataFrame(pd.read_csv('Subway_net.csv',header=None))
-# DF_adj = pd.DataFrame(data_df.values,index=labels,columns=labels)
-# #Network graph
-# G = nx.Graph()
-# G.add_nodes_from(labels)
-#
-# #Connect nodes
-# for i in range(DF_adj.shape[0]):
-#     col_label = DF_adj.columns[i]
-#     for j in range(DF_adj.shape[1]):
-#         row_label = DF_adj.index[j]
-#         node = DF_adj.iloc[i,j]
-#         if node == 1:
-#             G.add_edge(col_label,row_label)
-#
-#
-# nx.write_gpickle(G,'subway_g.gpickle')
+G = nx.Graph()
+labels = range(81)
+data_df = pd.DataFrame(pd.read_csv('Subway_net.csv',header=None))
+DF_adj = pd.DataFrame(data_df.values,index=labels,columns=labels)
+#Network graph
+G = nx.Graph()
+G.add_nodes_from(labels)
+
+#Connect nodes
+for i in range(DF_adj.shape[0]):
+    col_label = DF_adj.columns[i]
+    for j in range(DF_adj.shape[1]):
+        row_label = DF_adj.index[j]
+        node = DF_adj.iloc[i,j]
+        if node == 1:
+            G.add_edge(col_label,row_label)
+
+
+nx.write_gpickle(G,'subway_g.gpickle')
 G = nx.read_gpickle('subway_g.gpickle')
 df = pd.DataFrame(pd.read_csv('Subway_instation_data_01.csv',header=None))
 
@@ -47,7 +47,7 @@ data_df = pd.DataFrame(pd.read_csv('Subway_instation_data_01.csv', header=None))
 data = data_df.values
 x_list = [data[i:i+windows,:] for i in range(data.shape[0]-windows+1)]
 y_list = [x[windows-1] for x in x_list]
-y_list = list(StandardScaler().fit_transform(y_list))
+# y_list = list(StandardScaler().fit_transform(y_list))
 x_list = [x[:windows-1] for x in x_list]
 x_list = [np.swapaxes(x,0,1)  for x in x_list]
 
@@ -68,7 +68,7 @@ random.shuffle(y_list)
 # for i in range(int(len(index) * 0.9), len(index)):
 #     test_mask[index[i]] = 1
 
-edge_index = G.edges()
+edge_index = list(G.edges())
 edge_index = torch.tensor(edge_index).t().contiguous()
 edge_index = edge_index - edge_index.min()
 edge_index, _ = remove_self_loops(edge_index)
