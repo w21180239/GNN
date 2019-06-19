@@ -11,6 +11,14 @@ import random
 
 windows = 21     # n-1个输入 1个输出
 
+df = pd.DataFrame(pd.read_csv('backup/game_friend.csv'))
+G = nx.Graph()
+G.add_edges_from(df.values)
+df = pd.DataFrame(pd.read_csv('backup/plat_friend.csv'))
+G.add_edges_from(df.values)
+nx.write_gpickle(G,'my_graph.gpickle')
+exit(0)
+
 # G = nx.Graph()
 # labels = range(81)
 # data_df = pd.DataFrame(pd.read_csv('Subway_net.csv',header=None))
