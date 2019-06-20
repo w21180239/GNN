@@ -16,6 +16,8 @@ G = nx.Graph()
 G.add_edges_from(df.values)
 df = pd.DataFrame(pd.read_csv('backup/plat_friend.csv'))
 G.add_edges_from(df.values)
+df = pd.DataFrame(pd.read_csv('backup/whole_feature.csv'))
+G.add_nodes_from(df['openid'])
 nx.write_gpickle(G,'my_graph.gpickle')
 exit(0)
 
