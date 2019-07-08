@@ -7,7 +7,7 @@ import pandas as pd
 from torch_geometric.data import NeighborSampler,Data
 from torch_geometric.nn import SAGEConv
 from torch_geometric.utils import remove_self_loops
-from sklearn.preprocessing import Imputer, RobustScaler
+from sklearn.preprocessing import Imputer, RobustScaler,StandardScaler
 
 if os.path.exists('data.npz'):
     data = torch.load('data.npz')
@@ -22,9 +22,10 @@ else:
         data_df = pd.DataFrame(pd.read_csv('new_playerCharge-4.csv'))
         id_list = list(data_df['openid'])
         y = data_df['charge']
+        y = StandardScaler().fit_transform(y)
         G = G.subgraph(id_list)
         x = np.load('feature.npy')[id_list, 1:]
-        x = Imputer().fit_transform(x)
+        # x = Imputer().fit_transform(x)
         x = RobustScaler().fit_transform(x)
         np.save('sur_x.npy', x)
         np.save('sur_y.npy', y)
