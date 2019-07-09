@@ -12,11 +12,13 @@ from sklearn.preprocessing import Imputer, RobustScaler,StandardScaler
 from xgboost import XGBClassifier
 from sklearn.metrics import mean_squared_error,accuracy_score
 import random
-from keras.utils import to_categorical
+from pytorchtools import EarlyStopping
+import time
 
 FEA = 67
 OUT = 2
 baseline = 180
+my_lr = 1e-3
 
 
 num_node = 10000
@@ -24,7 +26,7 @@ rerun = False
 sk = False
 
 
-mmodel = 'ARMA'
+mmodel = 'GAT'
 
 def load_obj(name ):
     with open( name + '.pkl', 'rb') as f:
@@ -39,16 +41,17 @@ def get_data():
         if os.path.exists('sur_x.npy') and not rerun:
             x = np.load('sur_x.npy')
             y = np.load('sur_y.npy')
-            data_df = pd.DataFrame(pd.read_csv('new_playerCharge-4.csv'))
+            data_df = pd.DataFrame(pd.read_csv('new_playerCharge-5.csv'))
             id_list = list(data_df['openid'])
             random.shuffle(id_list)
             id_list = np.array(id_list[:num_node])
         else:
-            data_df = pd.DataFrame(pd.read_csv('new_playerCharge-4.csv'))
+            data_df = pd.DataFrame(pd.read_csv('new_playerCharge-5.csv'))
             id_list = list(data_df['openid'])
             random.seed(seed)
             random.shuffle(id_list)
             id_list = np.array(id_list[:num_node])
+
             y = list(data_df['charge'])
             random.seed(seed)
             random.shuffle(y)
@@ -59,6 +62,8 @@ def get_data():
             # y = to_categorical(y)
             G = G.subgraph(id_list)
             feature = load_obj('feature')
+            y = [y[i] for i in range(len(id_list)) if id_list[i]<len(feature)]
+            id_list = id_list[id_list<len(feature)]
             x = np.array([feature[i] for i in id_list])
             x = Imputer().fit_transform(x)
             np.save('sur_x.npy', x)
@@ -138,25 +143,34 @@ class Net(torch.nn.Module):
     def __init__(self):
         super(Net, self).__init__()
         if mmodel == 'GAT':
-            self.conv1 = GATConv(FEA, 8, heads=10, dropout=0.5)
+            self.conv1 = GATConv(FEA, 10, heads=10)
             self.conv2 = GATConv(
-                8 * 10, OUT, heads=1, concat=True, dropout=0.5)
+                10 * 10, OUT, heads=1, concat=True)
         elif mmodel == 'AGNN':
             self.lin1 = torch.nn.Linear(FEA, 64)
             self.prop1 = AGNNConv(requires_grad=False)
             self.prop2 = AGNNConv(requires_grad=True)
+            self.prop3 = AGNNConv(requires_grad=True)
             self.lin2 = torch.nn.Linear(64, OUT)
         elif mmodel == 'ARMA':
             self.conv1 = ARMAConv(
                 FEA,
-                16,
+                64,
                 num_stacks=3,
                 num_layers=2,
                 shared_weights=True,
                 dropout=0.25)
 
             self.conv2 = ARMAConv(
-                16,
+                64,
+                32,
+                num_stacks=3,
+                num_layers=2,
+                shared_weights=True,
+                dropout=0.25,
+                act=None)
+            self.conv3 = ARMAConv(
+                32,
                 OUT,
                 num_stacks=3,
                 num_layers=2,
@@ -174,15 +188,16 @@ class Net(torch.nn.Module):
 
     def forward(self):
         if mmodel == 'GAT':
-            x = F.dropout(data.x, p=0.5, training=self.training)
+            x = F.dropout(data.x, p=0.3, training=self.training)
             x = F.elu(self.conv1(x, data.edge_index))
-            x = F.dropout(x, p=0.5, training=self.training)
+            x = F.dropout(x, p=0.3, training=self.training)
             x = self.conv2(x, data.edge_index)
         elif mmodel == 'AGNN':
             x = F.dropout(data.x, training=self.training)
             x = F.relu(self.lin1(x))
             x = self.prop1(x, data.edge_index)
             x = self.prop2(x, data.edge_index)
+            x = self.prop3(x, data.edge_index)
             x = F.dropout(x, training=self.training)
             x = self.lin2(x)
         elif mmodel == 'ARMA':
@@ -190,7 +205,9 @@ class Net(torch.nn.Module):
             x = F.dropout(x, training=self.training)
             x = F.relu(self.conv1(x, edge_index))
             x = F.dropout(x, training=self.training)
-            x = self.conv2(x, edge_index)
+            x = F.relu(self.conv2(x, edge_index))
+            x = F.dropout(x, training=self.training)
+            x = self.conv3(x, edge_index)
         elif mmodel == 'Spline':
             x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
             x = F.dropout(x, training=self.training)
@@ -206,35 +223,6 @@ class Net(torch.nn.Module):
                 x, (h, c) = self.gplayers[i](x, edge_index, h, c)
             x = self.lin2(x)
         return F.log_softmax(x,dim=1)
-
-
-data =get_data()
-
-x_tran = RobustScaler()
-data.x = torch.from_numpy(x_tran.fit_transform(data.x)).to(torch.float)
-# data.y = torch.from_numpy(y_tran.fit_transform(data.y)).to(torch.float)
-
-
-if sk:
-    train_x = data.x[data.train_mask].numpy()
-    train_y = data.y[data.train_mask].numpy()
-
-    val_x = data.x[data.val_mask].numpy()
-    val_y = data.y[data.val_mask].numpy()
-
-    test_x = data.x[data.test_mask].numpy()
-    test_y = data.y[data.test_mask].numpy()
-
-    sk_model = XGBClassifier(tree_method='gpu_hist')
-    sk_model.fit(train_x, train_y)
-    print(accuracy_score(sk_model.predict(val_x), val_y))
-    print(accuracy_score(sk_model.predict(test_x), test_y))
-
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model, data = Net().to(device), data.to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=5e-4)
-
-
 def train():
     model.train()
     optimizer.zero_grad()
@@ -252,8 +240,47 @@ def test():
         accs.append(acc)
     return accs
 
+data =get_data()
 
-for epoch in range(1, 100001):
+x_tran = RobustScaler()
+data.x = torch.from_numpy(x_tran.fit_transform(data.x)).to(torch.float)
+early = EarlyStopping(patience=5,verbose=True)
+
+if sk:
+    train_x = data.x[data.train_mask].numpy()
+    train_y = data.y[data.train_mask].numpy()
+
+    val_x = data.x[data.val_mask].numpy()
+    val_y = data.y[data.val_mask].numpy()
+
+    test_x = data.x[data.test_mask].numpy()
+    test_y = data.y[data.test_mask].numpy()
+
+    sk_model = XGBClassifier(tree_method='gpu_hist')
+    sk_model.fit(train_x, train_y)
+    print(accuracy_score(sk_model.predict(val_x), val_y))
+    print(accuracy_score(sk_model.predict(test_x), test_y))
+
+
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+model, data = Net().to(device), data.to(device)
+model.load_state_dict(torch.load('checkpoint.pt'))
+optimizer = torch.optim.Adam(model.parameters(), lr=my_lr, weight_decay=0)
+for epoch in range(1, 50001):
     train()
     log = 'Epoch: {:03d}, Train: {:.4f}, Val: {:.4f}, Test: {:.4f}'
+    if not epoch % 50:
+        model.eval()
+        # F.nll_loss(model()[data.val_mask], data.y[data.val_mask]).item()
+        early(F.nll_loss(model()[data.val_mask], data.y[data.val_mask]).item(),model)
+        if early.early_stop:
+            print('change learning rate!')
+            time.sleep(1)
+            model.load_state_dict(torch.load('checkpoint.pt'))
+            my_lr *= 0.1
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = my_lr
+            early.early_stop=False
     print(log.format(epoch, *test()))
+
