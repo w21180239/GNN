@@ -2,20 +2,13 @@ import os
 
 import torch
 import torch.nn.functional as F
-# import networkx as nx
-# import numpy as np
-# import os
-# import pandas as pd
-# from torch_geometric.data import NeighborSampler,Data
-# from torch_geometric.nn import SAGEConv
-# from torch_geometric.utils import remove_self_loops
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
-batchsize = 10
-
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+batchsize = 64
+torch.cuda.set_device(0)
 
 class Net(torch.nn.Module):
     def __init__(self, in_channels, out_channels):

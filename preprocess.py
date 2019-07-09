@@ -4,7 +4,6 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import MaxAbsScaler
 from torch_geometric.data import Data
 from torch_geometric.utils import remove_self_loops
 
@@ -71,8 +70,8 @@ edge_index = edge_index - edge_index.min()
 edge_index, _ = remove_self_loops(edge_index)
 
 # transfrom x
-for i in range(len(x_list)):
-    x_list[i] = MaxAbsScaler().fit_transform(x_list[i])
+# for i in range(len(x_list)):
+#     x_list[i] = MaxAbsScaler().fit_transform(x_list[i])
 
 for i, x in enumerate(x_list):
     x_list[i] = torch.from_numpy(x).to(torch.float)
