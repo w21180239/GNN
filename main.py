@@ -1,17 +1,27 @@
+import os
+
 import torch
 import torch.nn.functional as F
+# import networkx as nx
+# import numpy as np
+# import os
+# import pandas as pd
+# from torch_geometric.data import NeighborSampler,Data
+# from torch_geometric.nn import SAGEConv
+# from torch_geometric.utils import remove_self_loops
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv
 
-batchsize = 5
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+batchsize = 10
 
 
 class Net(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Net, self).__init__()
         self.conv1 = GATConv(in_channels, 8, heads=8, dropout=0.6)
-        self.conv2 = GATConv(8 * 8, out_channels, heads=1, concat=True, dropout=0.6)
+        self.conv2 = GATConv(8 * 8, 3, heads=1, concat=True, dropout=0.6)
 
     def forward(self, x, edge_index):
         x = F.dropout(x, p=0.6, training=self.training)
@@ -53,10 +63,11 @@ def train(loader):
         loss = F.mse_loss(out, data.y.to(device))
         loss.backward()
         optimizer.step()
-        total_loss.append(loss.item())
+        loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
+        total_loss.append(loss_list)
     total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = total_loss.sum()
-    return total_loss / len(loader.dataset)
+    total_loss = [total_loss[:, i].sum() / len(total_loss) for i in range(3)]
+    return total_loss
 
 
 def test(loader):
@@ -64,19 +75,15 @@ def test(loader):
 
     total_loss = []
     for data in loader:
-        optimizer.zero_grad()
         out = model(data.x.to(device), data.edge_index.to(device))
-        loss = F.mse_loss(out, data.y.to(device))
-        loss.backward()
-        optimizer.step()
-        total_loss.append(loss.item())
+        loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
+        total_loss.append(loss_list)
     total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = total_loss.sum()
-    return total_loss / len(loader.dataset)
+    total_loss = [total_loss[:, i].sum() / len(total_loss) for i in range(3)]
+    return total_loss
 
 
 for epoch in range(1, 1001):
     loss = train(train_loader)
     test_acc = test(val_loader)
-    print('Epoch: {:02d}, Loss: {:.4f}, Test: {:.4f}'.format(
-        epoch, loss, test_acc))
+    print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{test_acc[0]}\t{test_acc[1]}\t{test_acc[2]}')
