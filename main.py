@@ -6,6 +6,8 @@ from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv
 
+from pytorchtools import EarlyStopping
+
 os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 batchsize = 64
 torch.cuda.set_device(0)
@@ -24,6 +26,7 @@ class Net(torch.nn.Module):
         return x
 
 
+ea = EarlyStopping(verbose=True)
 train_data_list = torch.load('subway_data_train.npz')
 val_data_list = torch.load('subway_data_val.npz')
 y_scaler = StandardScaler()
@@ -59,7 +62,7 @@ def train(loader):
         loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = [total_loss[:, i].sum() / len(total_loss) for i in range(3)]
+    total_loss = [total_loss[:, i].sum() / len(total_loss) ** 0.5 for i in range(3)]
     return total_loss
 
 
@@ -72,11 +75,15 @@ def test(loader):
         loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = [total_loss[:, i].sum() / len(total_loss) for i in range(3)]
+    total_loss = [total_loss[:, i].sum() / len(total_loss) ** 0.5 for i in range(3)]
     return total_loss
 
 
 for epoch in range(1, 1001):
     loss = train(train_loader)
-    test_acc = test(val_loader)
-    print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{test_acc[0]}\t{test_acc[1]}\t{test_acc[2]}')
+    val_loss = test(val_loader)
+    ea(sum(val_loss), model)
+    if ea.early_stop:
+        print('early stop!')
+        break
+    print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
