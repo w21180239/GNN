@@ -1,32 +1,35 @@
-import torch
-import torch.nn.functional as F
-import networkx as nx
-import numpy as np
 import os
 import pickle
-import pandas as pd
-from torch_geometric.data import NeighborSampler,Data
-from torch_geometric.nn import SAGEConv, GATConv,AGNNConv,ARMAConv,SplineConv
-from torch_geometric.utils import remove_self_loops
-from sklearn.preprocessing import Imputer, RobustScaler,StandardScaler
-from xgboost import XGBClassifier
-from sklearn.metrics import mean_squared_error,accuracy_score
 import random
-from pytorchtools import EarlyStopping
 import time
+
+import networkx as nx
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from sklearn.metrics import accuracy_score
+from sklearn.preprocessing import Imputer, RobustScaler, MaxAbsScaler
+from torch_geometric.data import Data
+from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
+from torch_geometric.utils import remove_self_loops
+from xgboost import XGBClassifier
+
+from attentionbagging import AttentionBagging
+from pytorchtools import EarlyStopping
 
 FEA = 67
 OUT = 2
-baseline = 180
+baseline = 100
 my_lr = 1e-3
 
 
 num_node = 10000
 rerun = False
 sk = False
+load_model = False
 
-
-mmodel = 'GAT'
+mmodel = 'AGNN'
 
 def load_obj(name ):
     with open( name + '.pkl', 'rb') as f:
@@ -91,8 +94,8 @@ def get_data():
         edge_index = edge_index - edge_index.min()
         edge_index, _ = remove_self_loops(edge_index)
 
-        # x = RobustScaler().fit_transform(x)
-        # x = torch.from_numpy(x).to(torch.float)
+        x = MaxAbsScaler().fit_transform(x)
+        x = torch.from_numpy(x).to(torch.float)
         # y = y.reshape(-1, 1)
         # st = StandardScaler()
         # y = st.fit_transform(y)           # transform
@@ -142,6 +145,7 @@ class GeniePathLayer(torch.nn.Module):
 class Net(torch.nn.Module):
     def __init__(self):
         super(Net, self).__init__()
+        self.bag = AttentionBagging(64, 2, 20, 0.5, True)
         if mmodel == 'GAT':
             self.conv1 = GATConv(FEA, 10, heads=10)
             self.conv2 = GATConv(
@@ -199,7 +203,8 @@ class Net(torch.nn.Module):
             x = self.prop2(x, data.edge_index)
             x = self.prop3(x, data.edge_index)
             x = F.dropout(x, training=self.training)
-            x = self.lin2(x)
+            _, x = self.bag(x)
+            # x = self.lin2(x)
         elif mmodel == 'ARMA':
             x, edge_index = data.x, data.edge_index
             x = F.dropout(x, training=self.training)
@@ -222,6 +227,7 @@ class Net(torch.nn.Module):
             for i, l in enumerate(self.gplayers):
                 x, (h, c) = self.gplayers[i](x, edge_index, h, c)
             x = self.lin2(x)
+        # x = A
         return F.log_softmax(x,dim=1)
 def train():
     model.train()
@@ -265,7 +271,8 @@ if sk:
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model, data = Net().to(device), data.to(device)
-model.load_state_dict(torch.load('checkpoint.pt'))
+if load_model:
+    model.load_state_dict(torch.load('checkpoint.pt'))
 optimizer = torch.optim.Adam(model.parameters(), lr=my_lr, weight_decay=0)
 for epoch in range(1, 50001):
     train()
@@ -282,5 +289,6 @@ for epoch in range(1, 50001):
             for param_group in optimizer.param_groups:
                 param_group['lr'] = my_lr
             early.early_stop=False
+            early.counter = 0
     print(log.format(epoch, *test()))
 
