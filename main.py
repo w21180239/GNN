@@ -2,21 +2,21 @@ import os
 
 import torch
 import torch.nn.functional as F
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler,RobustScaler,MaxAbsScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv
 
 from pytorchtools import EarlyStopping
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-batchsize = 64
-torch.cuda.set_device(0)
+# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+batchsize = 6000
+torch.cuda.set_device(2)
 
 class Net(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Net, self).__init__()
         self.conv1 = GATConv(in_channels, 8, heads=8, dropout=0.6)
-        self.conv2 = GATConv(8 * 8, 3, heads=1, concat=True, dropout=0.6)
+        self.conv2 = GATConv(8 * 8, out_channels, heads=1, concat=True, dropout=0.6)
 
     def forward(self, x, edge_index):
         x = F.dropout(x, p=0.6, training=self.training)
@@ -29,13 +29,20 @@ class Net(torch.nn.Module):
 ea = EarlyStopping(verbose=True)
 train_data_list = torch.load('subway_data_train.npz')
 val_data_list = torch.load('subway_data_val.npz')
+x_scaler = RobustScaler()
 y_scaler = StandardScaler()
 y = torch.cat([data.y for data in train_data_list], 0)
+x = torch.cat([data.x for data in train_data_list], 0)
+x_scaler.fit(x)
 y_scaler.fit(y)
 for data in train_data_list:
+    x = x_scaler.transform(data.x)
+    data.x = torch.from_numpy(x).to(torch.float)
     y = y_scaler.transform(data.y)
     data.y = torch.from_numpy(y).to(torch.float)
 for data in val_data_list:
+    x = x_scaler.transform(data.x)
+    data.x = torch.from_numpy(x).to(torch.float)
     y = y_scaler.transform(data.y)
     data.y = torch.from_numpy(y).to(torch.float)
 train_loader = DataLoader(
@@ -62,7 +69,7 @@ def train(loader):
         loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = [total_loss[:, i].sum() / len(total_loss) ** 0.5 for i in range(3)]
+    total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
 
 
@@ -75,15 +82,15 @@ def test(loader):
         loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = [total_loss[:, i].sum() / len(total_loss) ** 0.5 for i in range(3)]
+    total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
 
 
-for epoch in range(1, 1001):
+for epoch in range(1, 10001):
     loss = train(train_loader)
     val_loss = test(val_loader)
-    ea(sum(val_loss), model)
-    if ea.early_stop:
-        print('early stop!')
-        break
+    # ea(sum(val_loss), model)
+    # if ea.early_stop:
+    #     print('early stop!')
+    #     break
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
