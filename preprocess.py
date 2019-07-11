@@ -4,17 +4,16 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import MaxAbsScaler
 from torch_geometric.data import Data
 from torch_geometric.utils import remove_self_loops
 
 windows = 12 + 9  # n-1个输入 1个输出
 
-DF_adj = pd.DataFrame(pd.read_csv('test.csv', header=None))
+DF_adj = pd.DataFrame(pd.read_csv('Subway_net.csv', header=None))
 DF_adj[DF_adj > 0] = 1
 G = nx.Graph()
-labels = range(228)
-data_df = pd.DataFrame(pd.read_csv('Subway_net.csv',header=None))
+labels = range(81)
+# data_df = pd.DataFrame(pd.read_csv('Subway_net.csv',header=None))
 #Network graph
 G = nx.Graph()
 G.add_nodes_from(labels)
@@ -33,13 +32,14 @@ nx.write_gpickle(G,'subway_g.gpickle')
 
 G = nx.read_gpickle('subway_g.gpickle')
 
-data_df = pd.DataFrame(pd.read_csv('PeMSD7_V_228.csv', header=None))
+data_df = pd.DataFrame(pd.read_csv('Subway_instation_data_01.csv', header=None))
 data = data_df.values
 
 x_list = [data[i:i+windows,:] for i in range(data.shape[0]-windows+1)]
 y_list = [[x[windows - 7] for x in x_list], [x[windows - 4] for x in x_list], [x[windows - 1] for x in x_list]]
 y_list = [np.array([y_list[0][i], y_list[1][i], y_list[2][i]]) for i in range(len(y_list[0]))]
-
+# y_list = np.array(y_list)
+# np.swapaxes(y_list, 1, 2)
 x_list = [x[:windows - 9] for x in x_list]
 x_list = [np.swapaxes(x, 0, 1) for x in x_list]
 y_list = [np.swapaxes(y, 0, 1) for y in y_list]
@@ -69,10 +69,6 @@ edge_index = list(G.edges())
 edge_index = torch.tensor(edge_index).t().contiguous()
 edge_index = edge_index - edge_index.min()
 edge_index, _ = remove_self_loops(edge_index)
-
-# transfrom x
-for i in range(len(x_list)):
-    x_list[i] = MaxAbsScaler().fit_transform(x_list[i])
 
 for i, x in enumerate(x_list):
     x_list[i] = torch.from_numpy(x).to(torch.float)
