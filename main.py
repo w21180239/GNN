@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn.functional as F
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv
 
@@ -35,27 +35,27 @@ pre_data_list.append(torch.load('subway_data_pre_15.npz'))
 pre_data_list.append(torch.load('subway_data_pre_30.npz'))
 pre_data_list.append(torch.load('subway_data_pre_45.npz'))
 x_scaler = RobustScaler()
-# y_scaler = StandardScaler()
+y_scaler = StandardScaler()
 y = torch.cat([data.y for data in train_data_list], 0)
 x = torch.cat([data.x for data in train_data_list], 0)
 x_scaler.fit(x)
-# y_scaler.fit(y)
+y_scaler.fit(y)
 for data in train_data_list:
     x = x_scaler.transform(data.x)
     data.x = torch.from_numpy(x).to(torch.float)
-    # y = y_scaler.transform(data.y)
-    # data.y = torch.from_numpy(y).to(torch.float)
+    y = y_scaler.transform(data.y)
+    data.y = torch.from_numpy(y).to(torch.float)
 for data in val_data_list:
     x = x_scaler.transform(data.x)
     data.x = torch.from_numpy(x).to(torch.float)
-    # y = y_scaler.transform(data.y)
-    # data.y = torch.from_numpy(y).to(torch.float)
+    y = y_scaler.transform(data.y)
+    data.y = torch.from_numpy(y).to(torch.float)
 for pre in pre_data_list:
     for data in pre:
         x = x_scaler.transform(data.x)
         data.x = torch.from_numpy(x).to(torch.float)
-        # y = y_scaler.transform(data.y)
-        # data.y = torch.from_numpy(y).to(torch.float)
+        y = y_scaler.transform(data.y.expand(81, 3))
+        data.y = torch.from_numpy(y[:, 0]).to(torch.float)
 train_loader = DataLoader(
     train_data_list, batch_size=batchsize, shuffle=True)
 
@@ -80,7 +80,7 @@ def train(loader):
         optimizer.step()
         loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
-    # total_loss = y_scaler.inverse_transform(total_loss)
+    total_loss = y_scaler.inverse_transform(total_loss)
     total_loss = np.array(total_loss)
     total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
@@ -94,7 +94,7 @@ def test(loader):
         out = model(data.x.to(device), data.edge_index.to(device))
         loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
-    # total_loss = y_scaler.inverse_transform(total_loss)
+    total_loss = y_scaler.inverse_transform(total_loss)
     total_loss = np.array(total_loss)
     total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
@@ -103,15 +103,23 @@ def test(loader):
 def predict(loader_list):
     model.eval()
     result = []
+
+    lo = []
     for i in range(len(loader_list)):
         tmp = []
+        total_loss = []
         for data in loader_list[i]:
             out = model(data.x.to(device), data.edge_index.to(device))
-            # out = y_scaler.inverse_transform(out.cpu().detach().numpy())
-            tmp.append(out.cpu().detach().numpy()[:, i])
+            out = y_scaler.inverse_transform(out.cpu().detach().numpy())
+            loss = F.mse_loss(torch.from_numpy(out[:, i]).to(torch.float), data.y).item()
+            total_loss.append(loss)
+            tmp.append(out[:, i])
         cat_tmp = np.concatenate(tmp, 0)
         result.append(cat_tmp)
-    return result
+        total_loss = np.array(total_loss)
+        total_loss = (total_loss.sum() / len(total_loss)) ** 0.5
+        lo.append(total_loss)
+    return result, lo
 
 
 def write_out(result):
@@ -120,11 +128,13 @@ def write_out(result):
 for epoch in range(1, 10001):
     loss = train(train_loader)
     val_loss = test(val_loader)
-    ea(sum(val_loss), model)
-    if ea.early_stop:
-        print('early stop!')
-        break
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
+    if not epoch % 5:
+        ea(sum(val_loss) / len(val_loss), model)
+        if ea.early_stop:
+            print('early stop!')
+            break
 print('predicting...')
-re = predict(pre_loader_list)
+re, lo = predict(pre_loader_list)
+print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
 write_out(re)
