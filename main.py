@@ -54,8 +54,9 @@ for pre in pre_data_list:
     for data in pre:
         x = x_scaler.transform(data.x)
         data.x = torch.from_numpy(x).to(torch.float)
-        y = y_scaler.transform(data.y.expand(81, 3))
-        data.y = torch.from_numpy(y[:, 0]).to(torch.float)
+        data.y = data.y.squeeze()
+        # y = y_scaler.transform(data.y.expand(81, 3))
+        # data.y = torch.from_numpy(y[:, 0]).to(torch.float)
 train_loader = DataLoader(
     train_data_list, batch_size=batchsize, shuffle=True)
 
@@ -78,9 +79,11 @@ def train(loader):
         loss = F.mse_loss(out, data.y.to(device))
         loss.backward()
         optimizer.step()
-        loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
+        tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
+        tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+        loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
-    total_loss = y_scaler.inverse_transform(total_loss)
+    # total_loss = y_scaler.inverse_transform(total_loss)
     total_loss = np.array(total_loss)
     total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
@@ -92,9 +95,11 @@ def test(loader):
     total_loss = []
     for data in loader:
         out = model(data.x.to(device), data.edge_index.to(device))
-        loss_list = [F.mse_loss(out[:, i], data.y.to(device)[:, i]).item() for i in range(3)]
+        tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
+        tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+        loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
-    total_loss = y_scaler.inverse_transform(total_loss)
+    # total_loss = y_scaler.inverse_transform(total_loss)
     total_loss = np.array(total_loss)
     total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
@@ -125,11 +130,16 @@ def predict(loader_list):
 def write_out(result):
     df = pd.DataFrame({'15min': result[0], '30min': result[1], '45min': result[2]})
     df.to_csv('predict_out.csv', index=False, )
+
+
 for epoch in range(1, 10001):
     loss = train(train_loader)
     val_loss = test(val_loader)
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
-    if not epoch % 5:
+    print('predicting...')
+    re, lo = predict(pre_loader_list)
+    print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
+    if not epoch % 10:
         ea(sum(val_loss) / len(val_loss), model)
         if ea.early_stop:
             print('early stop!')
