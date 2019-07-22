@@ -17,13 +17,18 @@ class Net(torch.nn.Module):
     def __init__(self, in_channels, out_channels):
         super(Net, self).__init__()
         self.conv1 = GATConv(in_channels, 8, heads=8, dropout=0.6)
-        self.conv2 = GATConv(8 * 8, out_channels, heads=1, concat=True, dropout=0.6)
+        self.conv2 = GATConv(8 * 8, 64, heads=1, concat=True, dropout=0.6)
+        self.cla_15 = torch.nn.Sequential(torch.nn.Linear(64, 32), torch.nn.ReLU(), torch.nn.Linear(32, 1))
+        self.cla_30 = torch.nn.Sequential(torch.nn.Linear(64, 32), torch.nn.ReLU(), torch.nn.Linear(32, 1))
+        self.cla_45 = torch.nn.Sequential(torch.nn.Linear(64, 32), torch.nn.ReLU(), torch.nn.Linear(32, 1))
 
     def forward(self, x, edge_index):
         x = F.dropout(x, p=0.6, training=self.training)
         x = F.elu(self.conv1(x, edge_index))
         x = F.dropout(x, p=0.6, training=self.training)
-        x = self.conv2(x, edge_index)
+        x = F.elu(self.conv2(x, edge_index))
+        x_list = [self.cla_15(x), self.cla_30(x), self.cla_45(x)]
+        x = torch.cat(x_list, 1)
         return x
 
 
