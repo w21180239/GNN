@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from torch_geometric.data import DataLoader
@@ -11,8 +12,14 @@ from pytorchtools import EarlyStopping
 # os.environ["CUDA_VISIBLE_DEVICES"] = "2"
 batchsize = 1
 torch.cuda.set_device(0)
-mmodel = 'AGNN'
+mmodel = 'GAT'
 
+
+def MLP(channels):
+    return nn.Sequential(*[
+        nn.Sequential(nn.Linear(channels[i - 1], channels[i]), nn.ReLU(), nn.BatchNorm1d(channels[i]))
+        for i in range(1, len(channels))
+    ])
 
 class Breadth(torch.nn.Module):
     def __init__(self, in_dim, out_dim):
@@ -22,8 +29,6 @@ class Breadth(torch.nn.Module):
     def forward(self, x, edge_index):
         x = torch.tanh(self.gatconv(x, edge_index))
         return x
-
-
 class Depth(torch.nn.Module):
     def __init__(self, in_dim, hidden):
         super(Depth, self).__init__()
@@ -32,8 +37,6 @@ class Depth(torch.nn.Module):
     def forward(self, x, h, c):
         x, (h, c) = self.lstm(x, (h, c))
         return x, (h, c)
-
-
 class GeniePathLayer(torch.nn.Module):
     def __init__(self, in_dim):
         super(GeniePathLayer, self).__init__()
@@ -49,14 +52,17 @@ class GeniePathLayer(torch.nn.Module):
 class Net(torch.nn.Module):
     def __init__(self, FEA, OUT):
         super(Net, self).__init__()
+
         if mmodel == 'GAT':
-            self.conv1 = GATConv(FEA, 10, heads=10)
-            self.conv2 = GATConv(
-                10 * 10, OUT, heads=1, concat=True)
+            self.conv1 = GATConv(FEA, 8, heads=8)
+            self.conv2 = GATConv(8 * 8, 8, heads=8)
+            self.mlp = self.mlp = nn.Sequential(
+                MLP([64, 32, 16, 8]), nn.Dropout(0.5),
+                nn.Linear(8, OUT))
         elif mmodel == 'AGNN':
             self.lin1 = torch.nn.Linear(FEA, 64)
             self.prop1 = AGNNConv(requires_grad=False)
-            self.prop2 = AGNNConv(requires_grad=True)
+            self.prop2 = AGNNConv(requires_grad=False)
             self.prop3 = AGNNConv(requires_grad=True)
             self.lin2 = torch.nn.Linear(64, OUT)
         elif mmodel == 'ARMA':
@@ -98,7 +104,8 @@ class Net(torch.nn.Module):
             x = F.dropout(x, p=0.5, training=self.training)
             x = F.elu(self.conv1(x, edge_index))
             x = F.dropout(x, p=0.5, training=self.training)
-            x = self.conv2(x, edge_index)
+            x = F.elu(self.conv2(x, edge_index))
+            x = self.mlp(x)
         elif mmodel == 'AGNN':
             x = F.dropout(x, training=self.training)
             x = F.relu(self.lin1(x))
@@ -178,6 +185,7 @@ optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
 
 
 def train(loader):
+    global optimizer
     model.train()
     first = True
     total_loss = []
