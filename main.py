@@ -16,6 +16,8 @@ batchsize = 100
 drop_rate = 0
 mmodel = 'Genie'
 
+k = 2
+
 
 def MLP(channels):
     return nn.Sequential(*[
@@ -133,6 +135,7 @@ class Net(torch.nn.Module):
         return x
 
 
+
 ea = EarlyStopping(verbose=True, patience=20)
 train_data_list = torch.load('subway_data_train.npz')
 val_data_list = torch.load('subway_data_val.npz')
@@ -147,8 +150,10 @@ x = torch.cat([data.x for data in train_data_list], 0)
 x_scaler.fit(x)
 y_scaler.fit(y)
 del x, y
+tmp = []
 for data in train_data_list:
     x = x_scaler.transform(data.x)
+    tmp.append(np.reshape(x, (1, -1)))
     data.x = torch.from_numpy(x).to(torch.float)
     y = y_scaler.transform(data.y)
     data.y = torch.from_numpy(y).to(torch.float)
@@ -163,12 +168,17 @@ for pre in pre_data_list:
         data.x = torch.from_numpy(x).to(torch.float)
         data.y = data.y.squeeze()
 
-cluster_model = cl.KMeans(4)
+hh = np.concatenate(tmp, 0)
+cluster_model = cl.KMeans(k)
+class_label = cluster_model.fit_predict(hh)
 
+cl_train_list = []
+for i in range(k):
+    index = np.where(class_label == i)
+    cl_train_list.append([train_data_list[j] for j in list(index[0])])
 
-
-
-
+train_loader_list = [DataLoader(
+    data, batch_size=batchsize, shuffle=True) for data in cl_train_list]
 train_loader = DataLoader(
     train_data_list, batch_size=batchsize, shuffle=True)
 
@@ -247,15 +257,16 @@ def write_out(result):
     df.to_csv('predict_out_45.csv', index=False, header=None)
 
 
-for epoch in range(1, 10001):
-    loss = train(train_loader)
-    val_loss = test(val_loader)
-    print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
+for loader in train_loader_list:
+    for epoch in range(1, 1001):
+        loss = train(loader)
+        val_loss = test(val_loader)
+        print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
     # if not epoch % 10:
-    ea(sum(val_loss) / len(val_loss), model)
-    if ea.early_stop:
-        print('early stop!')
-        break
+    # ea(sum(val_loss) / len(val_loss), model)
+    # if ea.early_stop:
+    #     print('early stop!')
+    #     break
 print('predicting...')
 re, lo = predict(pre_loader_list)
 print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
