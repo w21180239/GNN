@@ -10,17 +10,15 @@ from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 from pytorchtools import EarlyStopping
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-batchsize = 1
+batchsize = 100
 torch.cuda.set_device(0)
-mmodel = 'GAT'
-
+mmodel = 'AGNN'
 
 def MLP(channels):
     return nn.Sequential(*[
         nn.Sequential(nn.Linear(channels[i - 1], channels[i]), nn.ReLU(), nn.BatchNorm1d(channels[i]))
         for i in range(1, len(channels))
     ])
-
 class Breadth(torch.nn.Module):
     def __init__(self, in_dim, out_dim):
         super(Breadth, self).__init__()
@@ -29,6 +27,8 @@ class Breadth(torch.nn.Module):
     def forward(self, x, edge_index):
         x = torch.tanh(self.gatconv(x, edge_index))
         return x
+
+
 class Depth(torch.nn.Module):
     def __init__(self, in_dim, hidden):
         super(Depth, self).__init__()
@@ -37,6 +37,8 @@ class Depth(torch.nn.Module):
     def forward(self, x, h, c):
         x, (h, c) = self.lstm(x, (h, c))
         return x, (h, c)
+
+
 class GeniePathLayer(torch.nn.Module):
     def __init__(self, in_dim):
         super(GeniePathLayer, self).__init__()
@@ -52,19 +54,18 @@ class GeniePathLayer(torch.nn.Module):
 class Net(torch.nn.Module):
     def __init__(self, FEA, OUT):
         super(Net, self).__init__()
-
         if mmodel == 'GAT':
-            self.conv1 = GATConv(FEA, 8, heads=8)
-            self.conv2 = GATConv(8 * 8, 8, heads=8)
-            self.mlp = self.mlp = nn.Sequential(
-                MLP([64, 32, 16, 8]), nn.Dropout(0.5),
-                nn.Linear(8, OUT))
+            self.conv1 = GATConv(FEA, 10, heads=10)
+            self.conv2 = GATConv(
+                10 * 10, OUT, heads=1, concat=True)
         elif mmodel == 'AGNN':
             self.lin1 = torch.nn.Linear(FEA, 64)
             self.prop1 = AGNNConv(requires_grad=False)
-            self.prop2 = AGNNConv(requires_grad=False)
+            self.prop2 = AGNNConv(requires_grad=True)
             self.prop3 = AGNNConv(requires_grad=True)
-            self.lin2 = torch.nn.Linear(64, OUT)
+            self.lin2 = nn.Sequential(
+                MLP([64, 64, 32, 16, 8]), nn.Dropout(0.5),
+                nn.Linear(8, OUT))
         elif mmodel == 'ARMA':
             self.conv1 = ARMAConv(
                 FEA,
@@ -104,8 +105,7 @@ class Net(torch.nn.Module):
             x = F.dropout(x, p=0.5, training=self.training)
             x = F.elu(self.conv1(x, edge_index))
             x = F.dropout(x, p=0.5, training=self.training)
-            x = F.elu(self.conv2(x, edge_index))
-            x = self.mlp(x)
+            x = self.conv2(x, edge_index)
         elif mmodel == 'AGNN':
             x = F.dropout(x, training=self.training)
             x = F.relu(self.lin1(x))
@@ -181,33 +181,25 @@ del train_data_list, val_data_list, pre_data_list
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = Net(12, 3).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
-optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
 
 
 def train(loader):
-    global optimizer
     model.train()
-    first = True
+
     total_loss = []
-    ee = 5000
     for data in loader:
-        for i in range(ee):
-            optimizer.zero_grad()
-            out = model(data.x.to(device), data.edge_index.to(device))
-            loss = F.mse_loss(out, data.y.to(device))
-            loss.backward()
-            optimizer.step()
-            tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
-            tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
-            loss_list = [(F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item()) ** 0.5 for i in range(3)]
-            print(f'{i}\t{loss_list[0]}\t{loss_list[1]}\t{loss_list[2]}\n')
-        if first:
-            optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
-            ee = 2000
-        # total_loss.append(loss_list)
+        optimizer.zero_grad()
+        out = model(data.x.to(device), data.edge_index.to(device))
+        loss = F.mse_loss(out, data.y.to(device))
+        loss.backward()
+        optimizer.step()
+        tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
+        tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+        loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
+        total_loss.append(loss_list)
     # total_loss = y_scaler.inverse_transform(total_loss)
-    # total_loss = np.array(total_loss)
-    # total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
+    total_loss = np.array(total_loss)
+    total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
 
 
