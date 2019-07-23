@@ -3,7 +3,6 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn import cluster as cl
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
@@ -14,9 +13,7 @@ torch.cuda.set_device(0)
 
 batchsize = 100
 drop_rate = 0
-mmodel = 'Genie'
-
-k = 2
+mmodel = 'GAT'
 
 
 def MLP(channels):
@@ -49,8 +46,8 @@ class Depth(torch.nn.Module):
 class GeniePathLayer(torch.nn.Module):
     def __init__(self, in_dim):
         super(GeniePathLayer, self).__init__()
-        self.breadth_func = Breadth(in_dim, 256)
-        self.depth_func = Depth(256, 256)
+        self.breadth_func = Breadth(in_dim, 64)
+        self.depth_func = Depth(64, 64)
 
     def forward(self, x, edge_index, h, c):
         x = self.breadth_func(x, edge_index)
@@ -63,11 +60,13 @@ class GeniePathLayer(torch.nn.Module):
 class Net(torch.nn.Module):
     def __init__(self, FEA, OUT):
         super(Net, self).__init__()
-        self.mlp = MLP([256, 256, 128, 64, 32, 16, 8, 3])
+        self.mlp = MLP([64, 128, 256, 128, 64])
+        self.heads = nn.ModuleList([MLP([64, 32, 16, 8, 4, 2, 1]) for i in range(3)])
+
         if mmodel == 'GAT':
-            self.conv1 = GATConv(FEA, 10, heads=10)
+            self.conv1 = GATConv(FEA, 12, heads=12)
             self.conv2 = GATConv(
-                10 * 10, 8, heads=8, concat=True)
+                12 * 12, 8, heads=8, concat=True)
         elif mmodel == 'AGNN':
             self.lin1 = torch.nn.Linear(FEA, 64)
             self.prop1 = AGNNConv(requires_grad=False)
@@ -94,9 +93,9 @@ class Net(torch.nn.Module):
             self.conv1 = SplineConv(FEA, 16, dim=1, kernel_size=2)
             self.conv2 = SplineConv(16, OUT, dim=1, kernel_size=2)
         elif mmodel == 'Genie':
-            self.lin1 = torch.nn.Linear(FEA, 256)
+            self.lin1 = torch.nn.Linear(FEA, 64)
             self.gplayers = torch.nn.ModuleList(
-                [GeniePathLayer(256) for i in range(4)])
+                [GeniePathLayer(64) for i in range(2)])
 
     def forward(self, x, edge_index):
         if mmodel == 'GAT':
@@ -105,6 +104,8 @@ class Net(torch.nn.Module):
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv2(x, edge_index))
             x = self.mlp(x)
+            out_list = [head(x) for head in self.heads]
+            x = torch.cat(out_list, 1)
         elif mmodel == 'AGNN':
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.lin1(x))
@@ -127,13 +128,12 @@ class Net(torch.nn.Module):
             x = self.mlp(x)
         elif mmodel == 'Genie':
             x = self.lin1(x)
-            h = torch.zeros(1, x.shape[0], 256, device=x.device)
-            c = torch.zeros(1, x.shape[0], 256, device=x.device)
+            h = torch.zeros(1, x.shape[0], 64, device=x.device)
+            c = torch.zeros(1, x.shape[0], 64, device=x.device)
             for i, l in enumerate(self.gplayers):
                 x, (h, c) = self.gplayers[i](x, edge_index, h, c)
             x = self.mlp(x)
         return x
-
 
 
 ea = EarlyStopping(verbose=True, patience=20)
@@ -150,10 +150,8 @@ x = torch.cat([data.x for data in train_data_list], 0)
 x_scaler.fit(x)
 y_scaler.fit(y)
 del x, y
-tmp = []
 for data in train_data_list:
     x = x_scaler.transform(data.x)
-    tmp.append(np.reshape(x, (1, -1)))
     data.x = torch.from_numpy(x).to(torch.float)
     y = y_scaler.transform(data.y)
     data.y = torch.from_numpy(y).to(torch.float)
@@ -168,17 +166,6 @@ for pre in pre_data_list:
         data.x = torch.from_numpy(x).to(torch.float)
         data.y = data.y.squeeze()
 
-hh = np.concatenate(tmp, 0)
-cluster_model = cl.KMeans(k)
-class_label = cluster_model.fit_predict(hh)
-
-cl_train_list = []
-for i in range(k):
-    index = np.where(class_label == i)
-    cl_train_list.append([train_data_list[j] for j in list(index[0])])
-
-train_loader_list = [DataLoader(
-    data, batch_size=batchsize, shuffle=True) for data in cl_train_list]
 train_loader = DataLoader(
     train_data_list, batch_size=batchsize, shuffle=True)
 
@@ -257,16 +244,15 @@ def write_out(result):
     df.to_csv('predict_out_45.csv', index=False, header=None)
 
 
-for loader in train_loader_list:
-    for epoch in range(1, 1001):
-        loss = train(loader)
-        val_loss = test(val_loader)
-        print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
+for epoch in range(1, 10001):
+    loss = train(train_loader)
+    val_loss = test(val_loader)
+    print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
     # if not epoch % 10:
-    # ea(sum(val_loss) / len(val_loss), model)
-    # if ea.early_stop:
-    #     print('early stop!')
-    #     break
+    ea(sum(val_loss) / len(val_loss), model)
+    if ea.early_stop:
+        print('early stop!')
+        break
 print('predicting...')
 re, lo = predict(pre_loader_list)
 print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
