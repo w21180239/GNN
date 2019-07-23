@@ -9,7 +9,7 @@ from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 from pytorchtools import EarlyStopping
 
 # os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-batchsize = 100
+batchsize = 1
 torch.cuda.set_device(0)
 mmodel = 'AGNN'
 
@@ -172,27 +172,34 @@ val_loader = DataLoader(
 pre_loader_list = [DataLoader(pre, batch_size=batchsize, shuffle=False) for pre in pre_data_list]
 del train_data_list, val_data_list, pre_data_list
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Net(81, 3).to(device)
+model = Net(12, 3).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
+optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
 
 
 def train(loader):
     model.train()
-
+    first = True
     total_loss = []
+    ee = 5000
     for data in loader:
-        optimizer.zero_grad()
-        out = model(data.x.to(device), data.edge_index.to(device))
-        loss = F.mse_loss(out, data.y.to(device))
-        loss.backward()
-        optimizer.step()
-        tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
-        tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
-        loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
-        total_loss.append(loss_list)
+        for i in range(ee):
+            optimizer.zero_grad()
+            out = model(data.x.to(device), data.edge_index.to(device))
+            loss = F.mse_loss(out, data.y.to(device))
+            loss.backward()
+            optimizer.step()
+            tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
+            tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+            loss_list = [(F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item()) ** 0.5 for i in range(3)]
+            print(f'{i}\t{loss_list[0]}\t{loss_list[1]}\t{loss_list[2]}\n')
+        if first:
+            optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+            ee = 2000
+        # total_loss.append(loss_list)
     # total_loss = y_scaler.inverse_transform(total_loss)
-    total_loss = np.array(total_loss)
-    total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
+    # total_loss = np.array(total_loss)
+    # total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
     return total_loss
 
 
