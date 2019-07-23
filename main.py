@@ -172,7 +172,7 @@ val_loader = DataLoader(
 pre_loader_list = [DataLoader(pre, batch_size=batchsize, shuffle=False) for pre in pre_data_list]
 del train_data_list, val_data_list, pre_data_list
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Net(train_data_list[0].num_features, train_data_list[0].y.size(1)).to(device)
+model = Net(81, 3).to(device)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
 
 
