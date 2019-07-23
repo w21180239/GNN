@@ -1,11 +1,11 @@
 import random
 
+import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data
-from torch_geometric.utils import remove_self_loops
 
 windows = 12 + 9  # n-1个输入 1个输出
 
@@ -27,7 +27,8 @@ for i in range(DF_adj.shape[0]):
         if node == 1:
             G.add_edge(col_label,row_label)
 
-
+nx.draw(G, with_labels=True, pos=nx.spring_layout(G), node_size=150)
+plt.show()
 nx.write_gpickle(G,'subway_g.gpickle')
 
 G = nx.read_gpickle('subway_g.gpickle')
@@ -58,6 +59,8 @@ for i in range(3):
     pre_x_list[i] = [np.swapaxes(x, 0, 1) for x in pre_x_list[i]]
     pre_y_list[i] = [np.reshape(y, (81, -1)) for y in pre_y_list[i]]
 
+tmp = np.array(pre_x_list[0])
+
 randnum = random.randint(0, 100)
 random.seed(randnum)
 random.shuffle(x_list)
@@ -81,8 +84,8 @@ random.shuffle(y_list[2])
 
 edge_index = list(G.edges())
 edge_index = torch.tensor(edge_index).t().contiguous()
-edge_index = edge_index - edge_index.min()
-edge_index, _ = remove_self_loops(edge_index)
+# edge_index = edge_index - edge_index.min()
+# edge_index, _ = remove_self_loops(edge_index)
 
 for i, x in enumerate(x_list):
     x_list[i] = torch.from_numpy(x).to(torch.float)
