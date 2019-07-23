@@ -3,17 +3,17 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.preprocessing import RobustScaler, StandardScaler
+from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 
 from pytorchtools import EarlyStopping
 
-torch.cuda.set_device(0)
+torch.cuda.set_device(2)
 
 batchsize = 100
 drop_rate = 0
-mmodel = 'Genie'
+mmodel = 'GAT'
 
 def MLP(channels):
     return nn.Sequential(*[
@@ -59,7 +59,7 @@ class Net(torch.nn.Module):
         if mmodel == 'GAT':
             self.conv1 = GATConv(FEA, 10, heads=10)
             self.conv2 = GATConv(
-                10 * 10, OUT, heads=1, concat=True)
+                10 * 10, 8, heads=8, concat=True)
         elif mmodel == 'AGNN':
             self.lin1 = torch.nn.Linear(FEA, 64)
             self.prop1 = AGNNConv(requires_grad=False)
@@ -133,7 +133,7 @@ pre_data_list = []
 pre_data_list.append(torch.load('subway_data_pre_15.npz'))
 pre_data_list.append(torch.load('subway_data_pre_30.npz'))
 pre_data_list.append(torch.load('subway_data_pre_45.npz'))
-x_scaler = RobustScaler()
+x_scaler = StandardScaler()
 y_scaler = StandardScaler()
 y = torch.cat([data.y for data in train_data_list], 0)
 x = torch.cat([data.x for data in train_data_list], 0)
