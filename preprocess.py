@@ -1,5 +1,3 @@
-import random
-
 import matplotlib.pyplot as plt
 import networkx as nx
 import numpy as np
@@ -48,8 +46,7 @@ for win in pre_win:
     pre_x_list.append(hh)
     pre_y_list.append(yy)
 
-# y_list = np.array(y_list)
-# np.swapaxes(y_list, 1, 2)
+
 x_list = [x[:windows - 9] for x in x_list]
 x_list = [np.swapaxes(x, 0, 1) for x in x_list]
 y_list = [np.swapaxes(y, 0, 1) for y in y_list]
@@ -60,26 +57,16 @@ for i in range(3):
 
 tmp = np.array(pre_x_list[0])
 
-randnum = random.randint(0, 100)
-random.seed(randnum)
-random.shuffle(x_list)
-random.seed(randnum)
-random.shuffle(y_list[0])
-random.seed(randnum)
-random.shuffle(y_list[1])
-random.seed(randnum)
-random.shuffle(y_list[2])
-# train_mask = np.array([0 for i in range(81)])
-# val_mask = np.array([0 for i in range(81)])
-# test_mask = np.array([0 for i in range(81)])
-# index = list(range(81))
-# random.shuffle(index)
-# for i in range(0, int(len(index) * 0.8)):
-#     train_mask[index[i]] = 1
-# for i in range(int(len(index) * 0.8), int(len(index) * 0.9)):
-#     val_mask[index[i]] = 1
-# for i in range(int(len(index) * 0.9), len(index)):
-#     test_mask[index[i]] = 1
+# randnum = random.randint(0, 100)
+# random.seed(randnum)
+# random.shuffle(x_list)
+# random.seed(randnum)
+# random.shuffle(y_list[0])
+# random.seed(randnum)
+# random.shuffle(y_list[1])
+# random.seed(randnum)
+# random.shuffle(y_list[2])
+
 
 edge_index = list(G.edges())
 edge_index = torch.tensor(edge_index).t().contiguous()
@@ -97,9 +84,6 @@ for j in range(3):
     for i, y in enumerate(pre_y_list[j]):
         pre_y_list[j][i] = torch.from_numpy(y).to(torch.float)
 
-# train_mask =  torch.from_numpy(train_mask).to(torch.uint8)
-# val_mask =  torch.from_numpy(val_mask).to(torch.uint8)
-# test_mask =  torch.from_numpy(test_mask).to(torch.uint8)
 
 
 train_list = []
