@@ -9,11 +9,11 @@ from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 
 from pytorchtools import EarlyStopping
 
-# os.environ["CUDA_VISIBLE_DEVICES"] = "2"
-batchsize = 100
 torch.cuda.set_device(0)
-mmodel = 'AGNN'
+
+batchsize = 100
 drop_rate = 0
+mmodel = 'Genie'
 
 def MLP(channels):
     return nn.Sequential(*[
@@ -43,8 +43,8 @@ class Depth(torch.nn.Module):
 class GeniePathLayer(torch.nn.Module):
     def __init__(self, in_dim):
         super(GeniePathLayer, self).__init__()
-        self.breadth_func = Breadth(in_dim, 256)
-        self.depth_func = Depth(256, 256)
+        self.breadth_func = Breadth(in_dim, 64)
+        self.depth_func = Depth(64, 64)
 
     def forward(self, x, edge_index, h, c):
         x = self.breadth_func(x, edge_index)
@@ -55,6 +55,7 @@ class GeniePathLayer(torch.nn.Module):
 class Net(torch.nn.Module):
     def __init__(self, FEA, OUT):
         super(Net, self).__init__()
+        self.mlp = MLP([64, 64, 32, 16, 8, 3])
         if mmodel == 'GAT':
             self.conv1 = GATConv(FEA, 10, heads=10)
             self.conv2 = GATConv(
@@ -64,9 +65,6 @@ class Net(torch.nn.Module):
             self.prop1 = AGNNConv(requires_grad=False)
             self.prop2 = AGNNConv(requires_grad=True)
             self.prop3 = AGNNConv(requires_grad=True)
-            self.lin2 = nn.Sequential(
-                MLP([64, 64, 32, 16, 8]), nn.Dropout(drop_rate),
-                nn.Linear(8, OUT))
         elif mmodel == 'ARMA':
             self.conv1 = ARMAConv(
                 FEA,
@@ -78,15 +76,7 @@ class Net(torch.nn.Module):
 
             self.conv2 = ARMAConv(
                 64,
-                32,
-                num_stacks=3,
-                num_layers=2,
-                shared_weights=True,
-                dropout=drop_rate,
-                act=None)
-            self.conv3 = ARMAConv(
-                32,
-                OUT,
+                64,
                 num_stacks=3,
                 num_layers=2,
                 shared_weights=True,
@@ -96,17 +86,16 @@ class Net(torch.nn.Module):
             self.conv1 = SplineConv(FEA, 16, dim=1, kernel_size=2)
             self.conv2 = SplineConv(16, OUT, dim=1, kernel_size=2)
         elif mmodel == 'Genie':
-            self.lin1 = torch.nn.Linear(FEA, 256)
+            self.lin1 = torch.nn.Linear(FEA, 64)
             self.gplayers = torch.nn.ModuleList(
-                [GeniePathLayer(256) for i in range(4)])
-            self.lin2 = torch.nn.Linear(256, OUT)
-
+                [GeniePathLayer(64) for i in range(2)])
     def forward(self, x, edge_index):
         if mmodel == 'GAT':
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv1(x, edge_index))
             x = F.dropout(x, p=drop_rate, training=self.training)
-            x = self.conv2(x, edge_index)
+            x = F.elu(self.conv2(x, edge_index))
+            x = self.mlp(x)
         elif mmodel == 'AGNN':
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.lin1(x))
@@ -114,29 +103,26 @@ class Net(torch.nn.Module):
             x = self.prop2(x, edge_index)
             x = self.prop3(x, edge_index)
             x = F.dropout(x, p=drop_rate, training=self.training)
-            x = self.lin2(x)
+            x = self.mlp(x)
         elif mmodel == 'ARMA':
-            x, edge_index = x, edge_index
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.conv1(x, edge_index))
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.conv2(x, edge_index))
-            x = F.dropout(x, p=drop_rate, training=self.training)
-            x = self.conv3(x, edge_index)
+            x = self.mlp(x)
         elif mmodel == 'Spline':
-            x, edge_index, edge_attr = x, edge_index, data.edge_attr
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv1(x, edge_index, edge_attr))
             x = F.dropout(x, p=drop_rate, training=self.training)
-            x = self.conv2(x, edge_index, edge_attr)
+            x = F.elu(self.conv2(x, edge_index, edge_attr))
+            x = self.mlp(x)
         elif mmodel == 'Genie':
-            x, edge_index = data.x, edge_index
             x = self.lin1(x)
-            h = torch.zeros(1, x.shape[0], 256, device=x.device)
-            c = torch.zeros(1, x.shape[0], 256, device=x.device)
+            h = torch.zeros(1, x.shape[0], 64, device=x.device)
+            c = torch.zeros(1, x.shape[0], 64, device=x.device)
             for i, l in enumerate(self.gplayers):
                 x, (h, c) = self.gplayers[i](x, edge_index, h, c)
-            x = self.lin2(x)
+            x = self.mlp(x)
         return x
 
 
@@ -181,7 +167,7 @@ pre_loader_list = [DataLoader(pre, batch_size=batchsize, shuffle=False) for pre 
 del train_data_list, val_data_list, pre_data_list
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = Net(12, 3).to(device)
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4, weight_decay=5e-4)
+optimizer = torch.optim.Adam(model.parameters())
 
 
 def train(loader):

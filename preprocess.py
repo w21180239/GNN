@@ -13,7 +13,6 @@ DF_adj = pd.DataFrame(pd.read_csv('Subway_net.csv', header=None))
 DF_adj[DF_adj > 0] = 1
 G = nx.Graph()
 labels = range(81)
-# data_df = pd.DataFrame(pd.read_csv('Subway_net.csv',header=None))
 #Network graph
 G = nx.Graph()
 G.add_nodes_from(labels)
@@ -84,7 +83,7 @@ random.shuffle(y_list[2])
 
 edge_index = list(G.edges())
 edge_index = torch.tensor(edge_index).t().contiguous()
-# edge_index = edge_index - edge_index.min()
+edge_index = edge_index - edge_index.min()
 # edge_index, _ = remove_self_loops(edge_index)
 
 for i, x in enumerate(x_list):
