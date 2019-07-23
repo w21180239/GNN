@@ -13,6 +13,7 @@ from pytorchtools import EarlyStopping
 batchsize = 100
 torch.cuda.set_device(0)
 mmodel = 'AGNN'
+drop_rate = 0
 
 def MLP(channels):
     return nn.Sequential(*[
@@ -64,7 +65,7 @@ class Net(torch.nn.Module):
             self.prop2 = AGNNConv(requires_grad=True)
             self.prop3 = AGNNConv(requires_grad=True)
             self.lin2 = nn.Sequential(
-                MLP([64, 64, 32, 16, 8]), nn.Dropout(0.5),
+                MLP([64, 64, 32, 16, 8]), nn.Dropout(drop_rate),
                 nn.Linear(8, OUT))
         elif mmodel == 'ARMA':
             self.conv1 = ARMAConv(
@@ -73,7 +74,7 @@ class Net(torch.nn.Module):
                 num_stacks=3,
                 num_layers=2,
                 shared_weights=True,
-                dropout=0.25)
+                dropout=drop_rate)
 
             self.conv2 = ARMAConv(
                 64,
@@ -81,7 +82,7 @@ class Net(torch.nn.Module):
                 num_stacks=3,
                 num_layers=2,
                 shared_weights=True,
-                dropout=0.25,
+                dropout=drop_rate,
                 act=None)
             self.conv3 = ARMAConv(
                 32,
@@ -89,7 +90,7 @@ class Net(torch.nn.Module):
                 num_stacks=3,
                 num_layers=2,
                 shared_weights=True,
-                dropout=0.25,
+                dropout=drop_rate,
                 act=None)
         elif mmodel == 'Spline':
             self.conv1 = SplineConv(FEA, 16, dim=1, kernel_size=2)
@@ -102,31 +103,31 @@ class Net(torch.nn.Module):
 
     def forward(self, x, edge_index):
         if mmodel == 'GAT':
-            x = F.dropout(x, p=0.5, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv1(x, edge_index))
-            x = F.dropout(x, p=0.5, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = self.conv2(x, edge_index)
         elif mmodel == 'AGNN':
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.lin1(x))
             x = self.prop1(x, edge_index)
             x = self.prop2(x, edge_index)
             x = self.prop3(x, edge_index)
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = self.lin2(x)
         elif mmodel == 'ARMA':
             x, edge_index = x, edge_index
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.conv1(x, edge_index))
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.conv2(x, edge_index))
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = self.conv3(x, edge_index)
         elif mmodel == 'Spline':
             x, edge_index, edge_attr = x, edge_index, data.edge_attr
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv1(x, edge_index, edge_attr))
-            x = F.dropout(x, training=self.training)
+            x = F.dropout(x, p=drop_rate, training=self.training)
             x = self.conv2(x, edge_index, edge_attr)
         elif mmodel == 'Genie':
             x, edge_index = data.x, edge_index
@@ -250,9 +251,9 @@ for epoch in range(1, 10001):
     loss = train(train_loader)
     val_loss = test(val_loader)
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
-    print('predicting...')
-    re, lo = predict(pre_loader_list)
-    print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
+    # print('predicting...')
+    # re, lo = predict(pre_loader_list)
+    # print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
     if not epoch % 10:
         ea(sum(val_loss) / len(val_loss), model)
         if ea.early_stop:
