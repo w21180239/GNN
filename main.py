@@ -3,6 +3,7 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn import cluster as cl
 from sklearn.preprocessing import StandardScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
@@ -13,7 +14,7 @@ torch.cuda.set_device(0)
 
 batchsize = 100
 drop_rate = 0
-mmodel = 'GAT'
+mmodel = 'Genie'
 
 
 def MLP(channels):
@@ -46,8 +47,8 @@ class Depth(torch.nn.Module):
 class GeniePathLayer(torch.nn.Module):
     def __init__(self, in_dim):
         super(GeniePathLayer, self).__init__()
-        self.breadth_func = Breadth(in_dim, 64)
-        self.depth_func = Depth(64, 64)
+        self.breadth_func = Breadth(in_dim, 256)
+        self.depth_func = Depth(256, 256)
 
     def forward(self, x, edge_index, h, c):
         x = self.breadth_func(x, edge_index)
@@ -60,7 +61,7 @@ class GeniePathLayer(torch.nn.Module):
 class Net(torch.nn.Module):
     def __init__(self, FEA, OUT):
         super(Net, self).__init__()
-        self.mlp = MLP([64, 128, 256, 128, 64, 32, 16, 8, 3])
+        self.mlp = MLP([256, 256, 128, 64, 32, 16, 8, 3])
         if mmodel == 'GAT':
             self.conv1 = GATConv(FEA, 10, heads=10)
             self.conv2 = GATConv(
@@ -91,9 +92,9 @@ class Net(torch.nn.Module):
             self.conv1 = SplineConv(FEA, 16, dim=1, kernel_size=2)
             self.conv2 = SplineConv(16, OUT, dim=1, kernel_size=2)
         elif mmodel == 'Genie':
-            self.lin1 = torch.nn.Linear(FEA, 64)
+            self.lin1 = torch.nn.Linear(FEA, 256)
             self.gplayers = torch.nn.ModuleList(
-                [GeniePathLayer(64) for i in range(2)])
+                [GeniePathLayer(256) for i in range(4)])
 
     def forward(self, x, edge_index):
         if mmodel == 'GAT':
@@ -124,8 +125,8 @@ class Net(torch.nn.Module):
             x = self.mlp(x)
         elif mmodel == 'Genie':
             x = self.lin1(x)
-            h = torch.zeros(1, x.shape[0], 64, device=x.device)
-            c = torch.zeros(1, x.shape[0], 64, device=x.device)
+            h = torch.zeros(1, x.shape[0], 256, device=x.device)
+            c = torch.zeros(1, x.shape[0], 256, device=x.device)
             for i, l in enumerate(self.gplayers):
                 x, (h, c) = self.gplayers[i](x, edge_index, h, c)
             x = self.mlp(x)
@@ -161,6 +162,12 @@ for pre in pre_data_list:
         x = x_scaler.transform(data.x)
         data.x = torch.from_numpy(x).to(torch.float)
         data.y = data.y.squeeze()
+
+cluster_model = cl.KMeans(4)
+
+
+
+
 
 train_loader = DataLoader(
     train_data_list, batch_size=batchsize, shuffle=True)
@@ -202,7 +209,7 @@ def test(loader):
     for data in loader:
         out = model(data.x.to(device), data.edge_index.to(device))
         tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
-        loss_list = [F.mse_loss(tmp_out[:, i].to(device), data.y[:, i]).item() for i in range(3)]
+        loss_list = [F.mse_loss(tmp_out[:, i], data.y[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     total_loss = np.array(total_loss)
     total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
