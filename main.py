@@ -186,7 +186,8 @@ def train(loader):
     for data in loader:
         optimizer.zero_grad()
         out = model(data.x.to(device), data.edge_index.to(device))
-        loss = F.mse_loss(out, data.y.to(device))
+        # loss = F.mse_loss(out, data.y.to(device))
+        loss = F.mse_loss(out[:, 0], data.y[:, 0].to(device))
         loss.backward()
         optimizer.step()
         tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
@@ -249,7 +250,7 @@ for epoch in range(1, 10001):
     val_loss = test(val_loader)
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
     # if not epoch % 10:
-    ea(sum(val_loss) / len(val_loss), model)
+    ea(val_loss[0], model)
     if ea.early_stop:
         print('early stop!')
         break
