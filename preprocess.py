@@ -4,8 +4,13 @@ import numpy as np
 import pandas as pd
 import torch
 from torch_geometric.data import Data
+import keras
 
-windows = 12 + 9  # n-1个输入 1个输出
+
+
+
+base_windows = 12
+windows = base_windows + 9  # n-1个输入 1个输出
 
 DF_adj = pd.DataFrame(pd.read_csv('Subway_net.csv', header=None))
 DF_adj[DF_adj > 0] = 1
@@ -36,13 +41,13 @@ data = data_df.values
 x_list = [data[i:i + windows, :] for i in range(data.shape[0] - windows + 1 - 3 * 288)]
 y_list = [[x[windows - 7] for x in x_list], [x[windows - 4] for x in x_list], [x[windows - 1] for x in x_list]]
 y_list = [np.array([y_list[0][i], y_list[1][i], y_list[2][i]]) for i in range(len(y_list[0]))]
-pre_win = [15, 18, 21]
+pre_win = [windows-6, windows-3, windows]
 pre_x_list = []
 pre_y_list = []
 for win in pre_win:
     hh = [data[i:i + win, :] for i in range(len(data) - 3 * 288 - win + 1, data.shape[0] - win + 1)]
     yy = [x[len(x) - 1, :] for x in hh]
-    hh = [x[:12] for x in hh]
+    hh = [x[:base_windows] for x in hh]
     pre_x_list.append(hh)
     pre_y_list.append(yy)
 
@@ -51,21 +56,32 @@ x_list = [x[:windows - 9] for x in x_list]
 x_list = [np.swapaxes(x, 0, 1) for x in x_list]
 y_list = [np.swapaxes(y, 0, 1) for y in y_list]
 
+ready = []
+for i in range(len(x_list)):
+    ready.extend([i % 288 for j in range(81)])
+time_stamp = keras.utils.to_categorical(ready, num_classes=None, dtype='float')
+for i in range(len(x_list)):
+    hh = x_list[i]
+    jj = time_stamp[i*81:(i+1)*81,:]
+    x_list[i] = np.concatenate([hh,jj],1)
+
+
 for i in range(3):
     pre_x_list[i] = [np.swapaxes(x, 0, 1) for x in pre_x_list[i]]
     pre_y_list[i] = [np.reshape(y, (81, -1)) for y in pre_y_list[i]]
 
+ready = []
+for i in range(len(pre_x_list[0])):
+    ready.extend([i % 288 for j in range(81)])
+time_stamp = keras.utils.to_categorical(ready, num_classes=None, dtype='float')
+for j in range(3):
+    for i in range(len(pre_x_list[0])):
+        hh = pre_x_list[j][i]
+        jj = time_stamp[i*81:(i+1)*81,:]
+        pre_x_list[j][i] = np.concatenate([hh,jj],1)
+
 tmp = np.array(pre_x_list[0])
 
-# randnum = random.randint(0, 100)
-# random.seed(randnum)
-# random.shuffle(x_list)
-# random.seed(randnum)
-# random.shuffle(y_list[0])
-# random.seed(randnum)
-# random.shuffle(y_list[1])
-# random.seed(randnum)
-# random.shuffle(y_list[2])
 
 
 edge_index = list(G.edges())

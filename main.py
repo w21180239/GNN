@@ -3,15 +3,17 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler,RobustScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 
 from pytorchtools import EarlyStopping
+import warnings
 
-torch.cuda.set_device(0)
+warnings.filterwarnings('ignore')
+torch.cuda.set_device(2)
 
-batchsize = 100
+batchsize = 400
 drop_rate = 0
 mmodel = 'GAT'
 
@@ -61,12 +63,16 @@ class Net(torch.nn.Module):
     def __init__(self, FEA, OUT):
         super(Net, self).__init__()
         self.mlp = MLP([64, 128, 256, 128, 64])
-        self.heads = nn.ModuleList([MLP([64, 32, 16, 8, 4, 2, 1]) for i in range(3)])
+        self.heads = nn.ModuleList([MLP([64, 32,32, 1]) for i in range(3)])
 
         if mmodel == 'GAT':
             self.conv1 = GATConv(FEA, 12, heads=12)
             self.conv2 = GATConv(
-                12 * 12, 8, heads=8, concat=True)
+                12 * 12, 12, heads=12)
+            self.conv3 = GATConv(
+                12 * 12, 12, heads=12)
+            self.conv4 = GATConv(
+                12 * 12, 8, heads=8)
         elif mmodel == 'AGNN':
             self.lin1 = torch.nn.Linear(FEA, 64)
             self.prop1 = AGNNConv(requires_grad=False)
@@ -102,10 +108,15 @@ class Net(torch.nn.Module):
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv1(x, edge_index))
             x = F.dropout(x, p=drop_rate, training=self.training)
-            x = F.elu(self.conv2(x, edge_index))
+            # x = F.elu(self.conv2(x, edge_index))
+            # x = F.dropout(x, p=drop_rate, training=self.training)
+            # x = F.elu(self.conv3(x, edge_index))
+            # x = F.dropout(x, p=drop_rate, training=self.training)
+            x = F.elu(self.conv4(x, edge_index))
             x = self.mlp(x)
             out_list = [head(x) for head in self.heads]
             x = torch.cat(out_list, 1)
+            # x = self.heads[0](x)
         elif mmodel == 'AGNN':
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.relu(self.lin1(x))
@@ -136,16 +147,16 @@ class Net(torch.nn.Module):
         return x
 
 
-ea = EarlyStopping(verbose=True, patience=20)
+ea = EarlyStopping(verbose=True, patience=10)
 train_data_list = torch.load('subway_data_train.npz')
 val_data_list = torch.load('subway_data_val.npz')
 pre_data_list = []
 pre_data_list.append(torch.load('subway_data_pre_15.npz'))
 pre_data_list.append(torch.load('subway_data_pre_30.npz'))
 pre_data_list.append(torch.load('subway_data_pre_45.npz'))
-x_scaler = StandardScaler()
-y_scaler = StandardScaler()
-y = torch.cat([data.y for data in train_data_list], 0)
+x_scaler = RobustScaler()
+y_scaler = RobustScaler()
+y = torch.cat([data.y[:,1].unsqueeze(1) for data in train_data_list], 0)
 x = torch.cat([data.x for data in train_data_list], 0)
 x_scaler.fit(x)
 y_scaler.fit(y)
@@ -175,19 +186,29 @@ val_loader = DataLoader(
 pre_loader_list = [DataLoader(pre, batch_size=1, shuffle=False) for pre in pre_data_list]
 del train_data_list, val_data_list, pre_data_list
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Net(12, 3).to(device)
-optimizer = torch.optim.Adam(model.parameters())
+model = Net(300, 3).to(device)
 
 
-def train(loader):
+def train(loader,first):
     model.train()
-
     total_loss = []
     for data in loader:
+        if first:
+            for i in range(20000):
+                optimizer.zero_grad()
+                out = model(data.x.to(device), data.edge_index.to(device))
+                loss = F.mse_loss(out, data.y.to(device), size_average=False)
+                loss.backward()
+                optimizer.step()
+                tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
+                tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+                loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
+                print(f'{i}\t{loss_list[0] ** 0.5}\t{loss_list[1] ** 0.5}\t{loss_list[2] ** 0.5}')
+                if loss_list[0] ** 0.5 < 20 and loss_list[1] ** 0.5 < 20 and loss_list[2] ** 0.5 < 20:
+                    return
         optimizer.zero_grad()
         out = model(data.x.to(device), data.edge_index.to(device))
-        # loss = F.mse_loss(out, data.y.to(device))
-        loss = F.mse_loss(out[:, 0], data.y[:, 0].to(device))
+        loss = F.mse_loss(out, data.y.to(device), size_average=False)
         loss.backward()
         optimizer.step()
         tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
@@ -245,15 +266,23 @@ def write_out(result):
     df.to_csv('predict_out_45.csv', index=False, header=None)
 
 
+optimizer = torch.optim.Adam(model.parameters())
+loss = train(train_loader,True)
+optimizer = torch.optim.Adam(model.parameters())
+sgd_lr = 1e-5
 for epoch in range(1, 10001):
-    loss = train(train_loader)
+    loss = train(train_loader,False)
     val_loss = test(val_loader)
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
     # if not epoch % 10:
-    ea(val_loss[0], model)
+    ea(sum(val_loss) / len(val_loss), model)
     if ea.early_stop:
         print('early stop!')
-        break
+        ea = EarlyStopping(10,True)
+        model.load_state_dict(torch.load('checkpoint.pt'))
+        optimizer = torch.optim.SGD(model.parameters(),lr=sgd_lr)
+        sgd_lr /= 2
+        continue
 print('predicting...')
 re, lo = predict(pre_loader_list)
 print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
