@@ -7,6 +7,7 @@ from sklearn.preprocessing import StandardScaler,RobustScaler
 from torch_geometric.data import DataLoader
 from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 
+
 from pytorchtools import EarlyStopping
 import warnings
 
@@ -17,6 +18,99 @@ batchsize = 400
 drop_rate = 0
 mmodel = 'GAT'
 
+class BasicBlock(nn.Module):
+    growth = 1
+
+    def __init__(self, inputs, outs, stride=1):
+        super(BasicBlock, self).__init__()
+        self.left = nn.Sequential(
+            nn.Conv2d(inputs, outs, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(outs),
+            nn.ReLU(),
+            nn.Conv2d(outs, outs, kernel_size=3, stride=1, padding=1, bias=False),
+            nn.BatchNorm2d(outs)
+        )
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or inputs != outs:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(inputs, outs, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(outs)
+            )
+
+    def forward(self, inputs):
+        network = self.left(inputs)
+        network += self.shortcut(inputs)
+        out = F.relu(network)
+        return out
+
+
+class UpgradeBlock(nn.Module):
+    growth = 4
+
+    def __init__(self, inputs, outs, stride=1):
+        super(UpgradeBlock, self).__init__()
+        self.left = nn.Sequential(
+            nn.Conv2d(inputs, outs, kernel_size=1, bias=False),
+            nn.BatchNorm2d(outs),
+            nn.ReLU(),
+            nn.Conv2d(outs, outs, kernel_size=3, stride=stride, padding=1, bias=False),
+            nn.BatchNorm2d(outs),
+            nn.ReLU(),
+            nn.Conv2d(outs, self.growth*outs, kernel_size=1, bias=False),
+            nn.BatchNorm2d(self.growth*outs)
+        )
+
+        self.shortcut = nn.Sequential()
+        if stride != 1 or inputs != self.growth * outs:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(inputs, self.growth * outs, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(self.growth * outs)
+            )
+
+    def forward(self, inputs):
+        network = self.left(inputs)
+        network += self.shortcut(inputs)
+        out = F.relu(network)
+        return out
+
+
+class ResNet(nn.Module):
+    def __init__(self, block, layers):
+        super(ResNet, self).__init__()
+        self.inputs = 64
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(in_channels=1, out_channels=64, kernel_size=3, padding=1, stride=1, bias=False),
+            nn.MaxPool2d(kernel_size=3, stride=1, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU()
+        )
+        self.conv2 = self._block(block, layers=layers[0], channels=64, stride=1)
+        self.conv3 = self._block(block, layers=layers[1], channels=128, stride=2)
+        self.conv4 = self._block(block, layers=layers[2], channels=256, stride=2)
+        self.conv5 = self._block(block, layers=layers[3], channels=512, stride=2)
+
+        self.linear = nn.Linear(512*block.growth, 3)
+
+    def forward(self, inputs):
+        network = self.conv1(inputs)
+        network = self.conv2(network)
+        network = self.conv3(network)
+        network = self.conv4(network)
+        network = self.conv5(network)
+        network = F.avg_pool2d(network, kernel_size=network.shape[2])
+        network = network.view(network.size(0), -1)
+        out = self.linear(network)
+
+        return out, network
+
+    def _block(self, block, layers, channels, stride):
+        strides = [stride] + [1] * (layers - 1)  # strides=[1,1]
+        layers = []
+        for stride in strides:
+            layers.append(block(self.inputs, channels, stride))
+            self.inputs = channels*block.growth
+        return nn.Sequential(*layers)
 
 def MLP(channels):
     return nn.Sequential(*[
@@ -64,7 +158,7 @@ class Net(torch.nn.Module):
         super(Net, self).__init__()
         self.mlp = MLP([64, 128, 256, 128, 64])
         self.heads = nn.ModuleList([MLP([64, 32,32, 1]) for i in range(3)])
-
+        self.resnet = ResNet(block=BasicBlock, layers=[1, 1,1,1])
         if mmodel == 'GAT':
             self.conv1 = GATConv(FEA, 12, heads=12)
             self.conv2 = GATConv(
@@ -113,9 +207,12 @@ class Net(torch.nn.Module):
             # x = F.elu(self.conv3(x, edge_index))
             # x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv4(x, edge_index))
-            x = self.mlp(x)
-            out_list = [head(x) for head in self.heads]
-            x = torch.cat(out_list, 1)
+            x = x.view(-1,1,8,8)
+
+            x,_ = self.resnet(x)
+            # x = self.mlp(x)
+            # out_list = [head(x) for head in self.heads]
+            # x = torch.cat(out_list, 1)
             # x = self.heads[0](x)
         elif mmodel == 'AGNN':
             x = F.dropout(x, p=drop_rate, training=self.training)
@@ -204,7 +301,7 @@ def train(loader,first):
                 tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
                 loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
                 print(f'{i}\t{loss_list[0] ** 0.5}\t{loss_list[1] ** 0.5}\t{loss_list[2] ** 0.5}')
-                if loss_list[0] ** 0.5 < 20 and loss_list[1] ** 0.5 < 20 and loss_list[2] ** 0.5 < 20:
+                if loss_list[0] ** 0.5 < 20 or loss_list[1] ** 0.5 < 20 or loss_list[2] ** 0.5 < 20:
                     return
         optimizer.zero_grad()
         out = model(data.x.to(device), data.edge_index.to(device))
