@@ -44,12 +44,14 @@ y_list = [np.array([y_list[0][i], y_list[1][i], y_list[2][i]]) for i in range(le
 pre_win = [windows-6, windows-3, windows]
 pre_x_list = []
 pre_y_list = []
+start_time = [(len(data) - 3 * 288 - win + 1) % 288 for win in pre_win]
 for win in pre_win:
     hh = [data[i:i + win, :] for i in range(len(data) - 3 * 288 - win + 1, data.shape[0] - win + 1)]
     yy = [x[len(x) - 1, :] for x in hh]
     hh = [x[:base_windows] for x in hh]
     pre_x_list.append(hh)
     pre_y_list.append(yy)
+
 
 
 x_list = [x[:windows - 9] for x in x_list]
@@ -70,11 +72,12 @@ for i in range(3):
     pre_x_list[i] = [np.swapaxes(x, 0, 1) for x in pre_x_list[i]]
     pre_y_list[i] = [np.reshape(y, (81, -1)) for y in pre_y_list[i]]
 
-ready = []
-for i in range(len(pre_x_list[0])):
-    ready.extend([i % 288 for j in range(81)])
-time_stamp = keras.utils.to_categorical(ready, num_classes=None, dtype='float')
+
 for j in range(3):
+    ready = []
+    for i in range(len(pre_x_list[0])):
+        ready.extend([(i+start_time[j]) % 288 for z in range(81)])
+    time_stamp = keras.utils.to_categorical(ready, num_classes=None, dtype='float')
     for i in range(len(pre_x_list[0])):
         hh = pre_x_list[j][i]
         jj = time_stamp[i*81:(i+1)*81,:]

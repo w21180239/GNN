@@ -11,11 +11,12 @@ from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
 from pytorchtools import EarlyStopping
 import warnings
 
-warnings.filterwarnings('ignore')
-torch.cuda.set_device(2)
-
-batchsize = 400
-drop_rate = 0
+warnings.filterwarnings\
+    ('ignore')
+torch.cuda.set_device(3)
+check_path = 'checkpoint3.pt'
+batchsize = 100
+drop_rate = 0.1
 mmodel = 'GAT'
 
 class BasicBlock(nn.Module):
@@ -240,7 +241,9 @@ class Net(torch.nn.Module):
             c = torch.zeros(1, x.shape[0], 64, device=x.device)
             for i, l in enumerate(self.gplayers):
                 x, (h, c) = self.gplayers[i](x, edge_index, h, c)
-            x = self.mlp(x)
+            x = x.view(-1,1,8,8)
+
+            x,_ = self.resnet(x)
         return x
 
 
@@ -286,7 +289,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = Net(300, 3).to(device)
 
 
-def train(loader,first):
+def train(loader,first,optimizer):
     model.train()
     total_loss = []
     for data in loader:
@@ -332,7 +335,7 @@ def test(loader):
     return total_loss
 
 
-def predict(loader_list):
+def predict(loader_list,work):
     model.eval()
     result = []
 
@@ -345,9 +348,11 @@ def predict(loader_list):
             out = y_scaler.inverse_transform(out.cpu().detach().numpy())
             loss = F.mse_loss(torch.from_numpy(out[:, i]).to(torch.float), data.y).item()
             total_loss.append(loss)
-            tmp.append(np.reshape(out[:, i], (-1, 1)))
-        cat_tmp = np.concatenate(tmp, 1)
-        result.append(cat_tmp)
+            if work:
+                tmp.append(np.reshape(out[:, i], (-1, 1)))
+        if work:
+            cat_tmp = np.concatenate(tmp, 1)
+            result.append(cat_tmp)
         total_loss = np.array(total_loss)
         total_loss = (total_loss.sum() / len(total_loss)) ** 0.5
         lo.append(total_loss)
@@ -364,23 +369,31 @@ def write_out(result):
 
 
 optimizer = torch.optim.Adam(model.parameters())
-loss = train(train_loader,True)
+loss = train(train_loader,True,optimizer)
 optimizer = torch.optim.Adam(model.parameters())
 sgd_lr = 1e-5
+counter = 0
 for epoch in range(1, 10001):
-    loss = train(train_loader,False)
+    loss = train(train_loader,False,optimizer)
     val_loss = test(val_loader)
     print(f'Epoch:{epoch}\nTrain:{loss[0]}\t{loss[1]}\t{loss[2]}\nTest:{val_loss[0]}\t{val_loss[1]}\t{val_loss[2]}')
     # if not epoch % 10:
-    ea(sum(val_loss) / len(val_loss), model)
+    re, lo = predict(pre_loader_list,False)
+    print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
+    ea(sum(lo) / len(lo), model)
+    # model.load_state_dict(torch.load('checkpoint.pt'))
     if ea.early_stop:
         print('early stop!')
+        if counter>4:
+            break
         ea = EarlyStopping(10,True)
-        model.load_state_dict(torch.load('checkpoint.pt'))
-        optimizer = torch.optim.SGD(model.parameters(),lr=sgd_lr)
+        model.load_state_dict(torch.load(check_path))
+        optimizer = torch.optim.Adam(model.parameters())
         sgd_lr /= 2
-        continue
+        counter+=1
+
+model.load_state_dict(torch.load(check_path))
 print('predicting...')
-re, lo = predict(pre_loader_list)
+re, lo = predict(pre_loader_list,True)
 print(f'predict RMSE:{lo[0]}\t{lo[1]}\t{lo[2]}')
 write_out(re)
