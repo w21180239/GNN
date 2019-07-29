@@ -1,20 +1,27 @@
+import matplotlib.pyplot as plt
 import networkx as nx
 import pandas as pd
-import pickle
-def save_obj(obj, name ):
-    with open(name + '.pkl', 'wb') as f:
-        pickle.dump(obj, f, pickle.HIGHEST_PROTOCOL)
 
-def load_obj(name ):
-    with open( name + '.pkl', 'rb') as f:
-        return pickle.load(f)
+G = nx.Graph()
+# G.add_nodes_from([i for i in range(1151372)])
+# nx.write_gml(G,'hh.gml')
+# G = nx.read_gml('hh.gml')
+# G.add_nodes_from([i for i in range(115)])
 
-df =pd.DataFrame(pd.read_csv('backup/whole_feature.csv'))
-hh = df.values
-dd={}
-total = len(hh)
-for i in range(len(hh)):
-    dd[int(hh[i][0])]=hh[i][2:]
-    if i%1000 == 0:
-        print(f'{i}/{total}')
-save_obj(dd,'feature')
+data_df = pd.DataFrame(pd.read_csv('new_playerCharge-4.csv'))
+jj = len(data_df)
+hh = max(data_df['openid'])
+exit(0)
+# im = Imputer()
+# val = im.fit_transform(data_df.values)
+# np.save('feature.npy',val)
+G = nx.read_gpickle('my_graph.gpickle')
+nx.draw(G)
+plt.show()
+G.add_nodes_from(data_df.values[:, 0].astype(int))
+df = pd.DataFrame(pd.read_csv('game_friend.csv'))
+G.add_edges_from(df.values.astype(int))
+df = pd.DataFrame(pd.read_csv('plat_friend.csv'))
+G.add_edges_from(df.values.astype(int))
+nx.write_gpickle(G, "my_graph.gpickle")
+exit(0)

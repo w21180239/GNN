@@ -1,294 +1,356 @@
-import os
-import pickle
+import argparse
+import os.path as osp
 import random
-import time
+import warnings
+from time import time, sleep
 
-import networkx as nx
-import numpy as np
-import pandas as pd
+import matplotlib.pyplot as plt
 import torch
 import torch.nn.functional as F
-from sklearn.metrics import accuracy_score
-from sklearn.preprocessing import Imputer, RobustScaler, MaxAbsScaler
+from sklearn import cluster as cl
+from sklearn import metrics as me
+from sklearn import neighbors
+from sklearn.metrics import classification_report
+from sklearn.metrics.pairwise import pairwise_distances
+from torch.nn import Sequential as Seq, Linear as Lin, ReLU, BatchNorm1d as BN, Dropout
 from torch_geometric.data import Data
-from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
-from torch_geometric.utils import remove_self_loops
+from torch_geometric.datasets import Planetoid
+from torch_geometric.nn import GCNConv, GATConv, GAE, VGAE, ARMAConv, AGNNConv, ARGA, ARGVA
+from torch_geometric.utils import subgraph
 from xgboost import XGBClassifier
 
-from attentionbagging import AttentionBagging
 from pytorchtools import EarlyStopping
 
-FEA = 67
-OUT = 2
-baseline = 100
-my_lr = 1e-3
+warnings.filterwarnings('ignore')
+
+discriminator_loss_para = 1
+reg_loss_para = 1
+epoch = 500
+learning_rate = 1e-3
+weight_decay = 0
+channels = 3
+patience = 50
+early = True
+times = 2
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--model', type=str, default='GAE')
+parser.add_argument('--dataset', type=str, default='Cora')
+parser.add_argument('--encoder', type=str, default='GCN')
+parser.add_argument('--dropout', type=int, default=0.5)
+args = parser.parse_args()
+kwargs = {'GAE': GAE, 'VGAE': VGAE, 'ARGA': ARGA, 'ARGVA': ARGVA}
+encoder_args = {'GCN': GCNConv, 'GAT': GATConv, 'ARMA': ARMAConv, 'AGNN': AGNNConv}
+assert args.model in kwargs.keys()
+assert args.encoder in encoder_args.keys()
+assert args.dataset in ['Cora', 'CiteSeer', 'PubMed']
 
 
-num_node = 10000
-rerun = False
-sk = False
-load_model = False
+def MLP(channels):
+    return Seq(*[
+        Seq(Lin(channels[i - 1], channels[i]), ReLU(), BN(channels[i]))
+        for i in range(1, len(channels))
+    ])
 
-mmodel = 'AGNN'
 
-def load_obj(name ):
-    with open( name + '.pkl', 'rb') as f:
-        return pickle.load(f)
+class Encoder(torch.nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(Encoder, self).__init__()
+        if args.encoder in ['GCN']:
+            self.conv1 = GCNConv(in_channels, 2 * out_channels)
+        elif args.encoder in ['GAT']:
+            self.conv1 = GATConv(in_channels, 8, heads=8, dropout=args.dropout)
+        elif args.encoder in ['ARMA']:
+            self.conv1 = ARMAConv(
+                in_channels,
+                2 * out_channels,
+                num_stacks=3,
+                num_layers=2,
+                shared_weights=True,
+                dropout=args.dropout)
+        elif args.encoder in ['AGNN']:
+            self.lin1 = torch.nn.Linear(in_channels, 2 * out_channels)
+            self.lin2 = torch.nn.Linear(2 * out_channels, out_channels)
 
-def get_data():
-    if os.path.exists('data.npz') and not rerun:
-        data = torch.load('data.npz')
-    else:
-        G = nx.read_gpickle('my_graph.gpickle')
-        seed = random.randint(0, 100)
-        if os.path.exists('sur_x.npy') and not rerun:
-            x = np.load('sur_x.npy')
-            y = np.load('sur_y.npy')
-            data_df = pd.DataFrame(pd.read_csv('new_playerCharge-5.csv'))
-            id_list = list(data_df['openid'])
-            random.shuffle(id_list)
-            id_list = np.array(id_list[:num_node])
-        else:
-            data_df = pd.DataFrame(pd.read_csv('new_playerCharge-5.csv'))
-            id_list = list(data_df['openid'])
-            random.seed(seed)
-            random.shuffle(id_list)
-            id_list = np.array(id_list[:num_node])
+            self.conv1 = AGNNConv(requires_grad=False)
 
-            y = list(data_df['charge'])
-            random.seed(seed)
-            random.shuffle(y)
-            y = np.array(y[:num_node])
-            y[y <= baseline] = 0
-            y[y > baseline] = 1
-            np.save('ori_y.npy', y)
-            # y = to_categorical(y)
-            G = G.subgraph(id_list)
-            feature = load_obj('feature')
-            y = [y[i] for i in range(len(id_list)) if id_list[i]<len(feature)]
-            id_list = id_list[id_list<len(feature)]
-            x = np.array([feature[i] for i in id_list])
-            x = Imputer().fit_transform(x)
-            np.save('sur_x.npy', x)
-            np.save('sur_y.npy', y)
-        train_mask = np.array([0 for i in range(x.shape[0])])
-        val_mask = np.array([0 for i in range(x.shape[0])])
-        test_mask = np.array([0 for i in range(x.shape[0])])
-        for i in range(0, int(x.shape[0] * 0.8)):
-            train_mask[i] = 1
-        for i in range(int(x.shape[0] * 0.8), int(x.shape[0] * 0.9)):
-            val_mask[i] = 1
-        for i in range(int(x.shape[0] * 0.9), x.shape[0]):
-            test_mask[i] = 1
-
-        G = G.subgraph(list(id_list))
-        ori_key = id_list
-        # ori_key.sort()
-        projection = {}
-        for i in range(len(id_list)):
-            projection[ori_key[i]] = i
-        edge_index = G.edges()
-        edge_index = [[projection[i[0]],projection[i[1]]] for i in edge_index]
-        # edge_index = []
-        edge_index = torch.tensor(edge_index).t().contiguous()
-        edge_index = edge_index - edge_index.min()
-        edge_index, _ = remove_self_loops(edge_index)
-
-        x = MaxAbsScaler().fit_transform(x)
-        x = torch.from_numpy(x).to(torch.float)
-        # y = y.reshape(-1, 1)
-        # st = StandardScaler()
-        # y = st.fit_transform(y)           # transform
-        y = torch.LongTensor(y)
-        train_mask =  torch.from_numpy(train_mask).to(torch.uint8)
-        val_mask =  torch.from_numpy(val_mask).to(torch.uint8)
-        test_mask =  torch.from_numpy(test_mask).to(torch.uint8)
-
-        data = Data(edge_index=edge_index, x=x, y=y, train_mask=train_mask, val_mask=val_mask,
-                    test_mask=test_mask)
-        torch.save(data, 'data.npz')
-    return data
-
-class Breadth(torch.nn.Module):
-    def __init__(self, in_dim, out_dim):
-        super(Breadth, self).__init__()
-        self.gatconv = GATConv(in_dim, out_dim, heads=1)
+        if args.model in ['GAE', 'ARGA']:
+            if args.encoder in ['GCN']:
+                self.conv2 = GCNConv(2 * out_channels, out_channels)
+            elif args.encoder in ['GAT']:
+                self.conv2 = GATConv(8 * 8, out_channels, dropout=args.dropout)
+            elif args.encoder in ['ARMA']:
+                self.conv2 = ARMAConv(
+                    2 * out_channels,
+                    out_channels,
+                    num_stacks=3,
+                    num_layers=2,
+                    shared_weights=True,
+                    dropout=0.25,
+                    act=None)
+            elif args.encoder in ['AGNN']:
+                self.conv2 = AGNNConv(requires_grad=True)
+        elif args.model in ['VGAE', 'ARGVA']:
+            if args.encoder in ['GCN']:
+                self.conv_mu = GCNConv(2 * out_channels, out_channels)
+                self.conv_logvar = GCNConv(
+                    2 * out_channels, out_channels)
+            elif args.encoder in ['GAT']:
+                self.conv_mu = GATConv(8 * 8, out_channels, dropout=args.dropout)
+                self.conv_logvar = GATConv(8 * 8, out_channels, dropout=args.dropout)
+            elif args.encoder in ['ARMA']:
+                self.conv_mu = ARMAConv(
+                    2 * out_channels,
+                    out_channels,
+                    num_stacks=3,
+                    num_layers=2,
+                    shared_weights=True,
+                    dropout=0.25,
+                    act=None)
+                self.conv_logvar = ARMAConv(
+                    2 * out_channels,
+                    out_channels,
+                    num_stacks=3,
+                    num_layers=2,
+                    shared_weights=True,
+                    dropout=0.25,
+                    act=None)
+            elif args.encoder in ['AGNN']:
+                self.lin3 = torch.nn.Linear(2 * out_channels, out_channels)
+                self.conv_mu = AGNNConv(requires_grad=True)
+                self.conv_logvar = AGNNConv(requires_grad=True)
 
     def forward(self, x, edge_index):
-        x = torch.tanh(self.gatconv(x, edge_index))
-        return x
-
-
-class Depth(torch.nn.Module):
-    def __init__(self, in_dim, hidden):
-        super(Depth, self).__init__()
-        self.lstm = torch.nn.LSTM(in_dim, hidden, 1, bias=False)
-
-    def forward(self, x, h, c):
-        x, (h, c) = self.lstm(x, (h, c))
-        return x, (h, c)
-
-
-class GeniePathLayer(torch.nn.Module):
-    def __init__(self, in_dim):
-        super(GeniePathLayer, self).__init__()
-        self.breadth_func = Breadth(in_dim, 256)
-        self.depth_func = Depth(256, 256)
-
-    def forward(self, x, edge_index, h, c):
-        x = self.breadth_func(x, edge_index)
-        x = x[None, :]
-        x, (h, c) = self.depth_func(x, h, c)
-        x = x[0]
-        return x, (h, c)
-
-class Net(torch.nn.Module):
-    def __init__(self):
-        super(Net, self).__init__()
-        self.bag = AttentionBagging(64, 2, 20, 0.5, True)
-        if mmodel == 'GAT':
-            self.conv1 = GATConv(FEA, 10, heads=10)
-            self.conv2 = GATConv(
-                10 * 10, OUT, heads=1, concat=True)
-        elif mmodel == 'AGNN':
-            self.lin1 = torch.nn.Linear(FEA, 64)
-            self.prop1 = AGNNConv(requires_grad=False)
-            self.prop2 = AGNNConv(requires_grad=True)
-            self.prop3 = AGNNConv(requires_grad=True)
-            self.lin2 = torch.nn.Linear(64, OUT)
-        elif mmodel == 'ARMA':
-            self.conv1 = ARMAConv(
-                FEA,
-                64,
-                num_stacks=3,
-                num_layers=2,
-                shared_weights=True,
-                dropout=0.25)
-
-            self.conv2 = ARMAConv(
-                64,
-                32,
-                num_stacks=3,
-                num_layers=2,
-                shared_weights=True,
-                dropout=0.25,
-                act=None)
-            self.conv3 = ARMAConv(
-                32,
-                OUT,
-                num_stacks=3,
-                num_layers=2,
-                shared_weights=True,
-                dropout=0.25,
-                act=None)
-        elif mmodel == 'Spline':
-            self.conv1 = SplineConv(FEA, 16, dim=1, kernel_size=2)
-            self.conv2 = SplineConv(16, OUT, dim=1, kernel_size=2)
-        elif mmodel == 'Genie':
-            self.lin1 = torch.nn.Linear(FEA, 256)
-            self.gplayers = torch.nn.ModuleList(
-                [GeniePathLayer(256) for i in range(4)])
-            self.lin2 = torch.nn.Linear(256, OUT)
-
-    def forward(self):
-        if mmodel == 'GAT':
-            x = F.dropout(data.x, p=0.3, training=self.training)
-            x = F.elu(self.conv1(x, data.edge_index))
-            x = F.dropout(x, p=0.3, training=self.training)
-            x = self.conv2(x, data.edge_index)
-        elif mmodel == 'AGNN':
-            x = F.dropout(data.x, training=self.training)
+        x = F.dropout(x, p=args.dropout, training=self.training)
+        if args.encoder in ['AGNN']:
             x = F.relu(self.lin1(x))
-            x = self.prop1(x, data.edge_index)
-            x = self.prop2(x, data.edge_index)
-            x = self.prop3(x, data.edge_index)
-            x = F.dropout(x, training=self.training)
-            _, x = self.bag(x)
-            # x = self.lin2(x)
-        elif mmodel == 'ARMA':
-            x, edge_index = data.x, data.edge_index
-            x = F.dropout(x, training=self.training)
-            x = F.relu(self.conv1(x, edge_index))
-            x = F.dropout(x, training=self.training)
-            x = F.relu(self.conv2(x, edge_index))
-            x = F.dropout(x, training=self.training)
-            x = self.conv3(x, edge_index)
-        elif mmodel == 'Spline':
-            x, edge_index, edge_attr = data.x, data.edge_index, data.edge_attr
-            x = F.dropout(x, training=self.training)
-            x = F.elu(self.conv1(x, edge_index, edge_attr))
-            x = F.dropout(x, training=self.training)
-            x = self.conv2(x, edge_index, edge_attr)
-        elif mmodel == 'Genie':
-            x, edge_index = data.x, data.edge_index
-            x = self.lin1(x)
-            h = torch.zeros(1, x.shape[0], 256, device=x.device)
-            c = torch.zeros(1, x.shape[0], 256, device=x.device)
-            for i, l in enumerate(self.gplayers):
-                x, (h, c) = self.gplayers[i](x, edge_index, h, c)
-            x = self.lin2(x)
-        # x = A
-        return F.log_softmax(x,dim=1)
-def train():
-    model.train()
-    optimizer.zero_grad()
-    F.nll_loss(model()[data.train_mask], data.y[data.train_mask]).backward()
-    optimizer.step()
+        x = self.conv1(x, edge_index)
+        if args.encoder not in ['AGNN']:
+            x = F.relu(x)
+        if args.model in ['GAE', 'ARGA']:
+            x = self.conv2(x, edge_index)
+            if args.encoder in ['AGNN']:
+                x = F.dropout(x, training=self.training, p=args.dropout)
+                x = self.lin2(x)
+            return x
+        elif args.model in ['VGAE', 'ARGVA']:
+            mu = self.conv_mu(x, edge_index)
+            logvar = self.conv_logvar(x, edge_index)
+            if args.encoder in ['AGNN']:
+                mu = F.dropout(mu, training=self.training, p=args.dropout)
+                mu = self.lin2(mu)
+                logvar = F.dropout(logvar, training=self.training, p=args.dropout)
+                logvar = self.lin2(logvar)
+            return mu, logvar
 
 
-def test():
+class Discriminator(torch.nn.Module):
+    def __init__(self, in_channels, out_channels=1):
+        super(Discriminator, self).__init__()
+        self.mlp = Seq(
+            MLP([in_channels, 128, 64]), Dropout(args.dropout),
+            Lin(64, out_channels))
+
+    def forward(self, x):
+        return self.mlp(x)
+
+
+def train(data):
+    print('Train:')
+    print('--------------------------------------------------\n\n')
+    global epoch, learning_rate, weight_decay, model
+    if early:
+        early_stopping = EarlyStopping(patience=patience)
+
+    for epoch in range(epoch):
+        model.train()
+        optimizer.zero_grad()
+        z = model.encode(data.x, data.train_pos_edge_index)
+        loss = model.recon_loss(z, data.train_pos_edge_index)
+        if early:
+            test_loss = model.recon_loss(z, data.test_pos_edge_index)
+        if args.model in ['VGAE', 'ARGVA']:
+            loss = loss + (1 / data.num_nodes) * model.kl_loss()
+            if early:
+                test_loss = test_loss + (1 / data.num_nodes) * model.kl_loss()
+        if args.model in ['ARGA', 'ARGVA']:
+            loss = loss + discriminator_loss_para * model.discriminator_loss(z) + reg_loss_para * model.reg_loss(z)
+            if early:
+                test_loss = test_loss + discriminator_loss_para * model.discriminator_loss(
+                    z) + reg_loss_para * model.reg_loss(z)
+        loss.backward()
+        optimizer.step()
+        if not epoch % 5:
+            model.eval()
+            with torch.no_grad():
+                z = model.encode(data.x, data.train_pos_edge_index)
+                roc, mean = model.test(z, data.test_pos_edge_index, data.test_neg_edge_index)
+                print(f'graph_num:{graph_num}\tepoch:{epoch}\tloss:{loss}\troc:{roc}\tmean:{mean}')
+        if early:
+            early_stopping(test_loss, model)
+            if early_stopping.early_stop:
+                print("Early stopping")
+                break
+    if early:
+        model.load_state_dict(torch.load('checkpoint.pt'))
+
+
+def test_unsupervised(model, data):
+    cluster_model = cl.KMeans(data.y.cpu().numpy().max() + 1)
+
     model.eval()
-    logits, accs = model(), []
-    # pre_y = torch.from_numpy(y_tran.inverse_transform(logits.cpu().detach())).to(torch.float)
-    for _, mask in data('train_mask', 'val_mask', 'test_mask'):
-        pred = logits[mask].max(1)[1]
-        acc = pred.eq(data.y[mask]).sum().item() / mask.sum().item()
-        accs.append(acc)
-    return accs
+    z = model.encode(data.x.to(dev), data.train_pos_edge_index.to(dev))
+    z = z.cpu().detach().numpy()
+    if data.y is None:
+        cluster_model.fit(z)
+    else:
+        true_label = data.y.cpu().detach().numpy()
 
-data =get_data()
+        t = time()
+        predict_label = cluster_model.fit_predict(data.x.cpu().detach().numpy())
+        t_before = time() - t
+        X = pairwise_distances(data.x.cpu().detach().numpy(), metric='cosine')
+        before_embedding_1 = (true_label, predict_label)
+        before_embedding_2 = (X, true_label)
 
-x_tran = RobustScaler()
-data.x = torch.from_numpy(x_tran.fit_transform(data.x)).to(torch.float)
-early = EarlyStopping(patience=5,verbose=True)
+        t = time()
+        predict_label = cluster_model.fit_predict(z)
+        t_after = time() - t
+        X = pairwise_distances(z, metric='cosine')
 
-if sk:
-    train_x = data.x[data.train_mask].numpy()
-    train_y = data.y[data.train_mask].numpy()
+        after_embedding_1 = (true_label, predict_label)
+        after_embedding_2 = (X, true_label)
+        metric_before = {'time': t_before,
+                         'adjusted_rand_score': me.adjusted_rand_score(*before_embedding_1),
+                         'adjuested_mutual_info_score': me.adjusted_mutual_info_score(*before_embedding_1),
+                         'homogeneity_score': me.homogeneity_score(*before_embedding_1),
+                         'completeness_score': me.completeness_score(*before_embedding_1),
+                         'v_measure_score': me.v_measure_score(*before_embedding_1),
+                         'fowlkes_mallows_score': me.fowlkes_mallows_score(*before_embedding_1),
+                         'silhouette_score': me.silhouette_score(*before_embedding_2),
+                         'calinski_harabaz_score': me.calinski_harabaz_score(*before_embedding_2)}
 
-    val_x = data.x[data.val_mask].numpy()
-    val_y = data.y[data.val_mask].numpy()
+        metric_after = {'time': t_after,
+                        'adjusted_rand_score': me.adjusted_rand_score(*after_embedding_1),
+                        'adjuested_mutual_info_score': me.adjusted_mutual_info_score(*after_embedding_1),
+                        'homogeneity_score': me.homogeneity_score(*after_embedding_1),
+                        'completeness_score': me.completeness_score(*after_embedding_1),
+                        'v_measure_score': me.v_measure_score(*after_embedding_1),
+                        'fowlkes_mallows_score': me.fowlkes_mallows_score(*after_embedding_1),
+                        'silhouette_score': me.silhouette_score(*after_embedding_2),
+                        'calinski_harabaz_score': me.calinski_harabaz_score(*after_embedding_2)}
+        print('\n\n\nTest:')
+        print('--------------------------------------------------\n\n')
+        print('Before embedding:')
+        for key, value in metric_before.items():
+            print(f'{key}:{value}')
+        print('--------------------------------------------------\n\n')
+        print('After embedding:')
+        for key, value in metric_after.items():
+            print(f'{key}:{value}')
 
-    test_x = data.x[data.test_mask].numpy()
-    test_y = data.y[data.test_mask].numpy()
-
-    sk_model = XGBClassifier(tree_method='gpu_hist')
-    sk_model.fit(train_x, train_y)
-    print(accuracy_score(sk_model.predict(val_x), val_y))
-    print(accuracy_score(sk_model.predict(test_x), test_y))
+    return cluster_model, z
 
 
+def test_supervised(model, data):
+    model.eval()
+    z = model.encode(data.x, data.train_pos_edge_index)
+    train_label = data.y[data.train_mask].cpu().detach().numpy()
+    test_label = data.y[data.test_mask].cpu().detach().numpy()
+    target_names = [f'class{i}' for i in range(data.y.cpu().numpy().max() + 1)]
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model, data = Net().to(device), data.to(device)
-if load_model:
-    model.load_state_dict(torch.load('checkpoint.pt'))
-optimizer = torch.optim.Adam(model.parameters(), lr=my_lr, weight_decay=0)
-for epoch in range(1, 50001):
-    train()
-    log = 'Epoch: {:03d}, Train: {:.4f}, Val: {:.4f}, Test: {:.4f}'
-    if not epoch % 50:
-        model.eval()
-        # F.nll_loss(model()[data.val_mask], data.y[data.val_mask]).item()
-        early(F.nll_loss(model()[data.val_mask], data.y[data.val_mask]).item(),model)
-        if early.early_stop:
-            print('change learning rate!')
-            time.sleep(1)
-            model.load_state_dict(torch.load('checkpoint.pt'))
-            my_lr *= 0.1
-            for param_group in optimizer.param_groups:
-                param_group['lr'] = my_lr
-            early.early_stop=False
-            early.counter = 0
-    print(log.format(epoch, *test()))
+    print('\n\n\nNormal classifier')
+    classify_model = neighbors.KNeighborsClassifier()
+    classify_model.fit(data.x[data.train_mask].cpu().detach().numpy(), train_label)
 
+    ori_pre = classify_model.predict(data.x[data.test_mask].cpu().detach().numpy())
+    print('--------------------------------------------------\n\n')
+    print('Original:')
+    print(classification_report(test_label, ori_pre, target_names=target_names))
+
+    classify_model = neighbors.KNeighborsClassifier()
+    classify_model.fit(z[data.train_mask].cpu().detach().numpy(), train_label)
+    ori_pre = classify_model.predict(z[data.test_mask].cpu().detach().numpy())
+    print('--------------------------------------------------\n\n')
+    print('Embedded:')
+    print(classification_report(test_label, ori_pre, target_names=target_names))
+
+    print('\n\n\nStrong classifier')
+    classify_model = XGBClassifier(tree_method='gpu_hist', predictor='gpu_predictor')
+    classify_model.fit(data.x[data.train_mask].cpu().detach().numpy(), train_label)
+    ori_pre = classify_model.predict(data.x[data.test_mask].cpu().detach().numpy())
+    print('--------------------------------------------------\n\n')
+    print('Original:')
+    print(classification_report(test_label, ori_pre, target_names=target_names))
+
+    classify_model = XGBClassifier(tree_method='gpu_hist', predictor='gpu_predictor')
+    # classify_model = neighbors.KNeighborsClassifier()
+    classify_model.fit(z[data.train_mask].cpu().detach().numpy(), train_label)
+    ori_pre = classify_model.predict(z[data.test_mask].cpu().detach().numpy())
+    print('--------------------------------------------------\n\n')
+    print('Embedded:')
+    print(classification_report(test_label, ori_pre, target_names=target_names))
+
+
+def plot_graph(cluster_model, z):
+    print('--------------------------------------------------\n\n')
+    print('Ploting...')
+    label_pred = cluster_model.labels_  # 获取聚类标签
+    mark = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
+    c_list = [mark[i] for i in label_pred]
+    if z.shape[1] == 2:
+        ax = plt.subplot(111)
+        ax.scatter(z[:, 0], z[:, 1], c=c_list, s=10)
+        ax.set_ylabel('Y')
+        ax.set_xlabel('X')
+    elif z.shape[1] == 3:
+        ax = plt.subplot(111, projection='3d')  # 创建一个三维的绘图工程
+        ax.scatter(z[:, 0], z[:, 1], z[:, 2], c=c_list, s=20)
+        ax.set_zlabel('Z')
+        ax.set_ylabel('Y')
+        ax.set_xlabel('X')
+    else:
+        print('Wrong dimension!')
+    plt.show()
+
+
+dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+path = osp.join(
+    osp.dirname(osp.realpath(__file__)), '..', 'data', args.dataset)
+dataset = Planetoid(path, args.dataset)
+data = dataset[0]
+
+# 无监督
+parameter2model = [Encoder(data.num_features, channels)]
+if args.model in ['ARGVA', 'ARGA']:
+    dis = Discriminator(channels)
+    parameter2model.append(dis)
+
+model = kwargs[args.model](*parameter2model).to(dev)
+
+# 半监督
+# model = Encoder(num_feature, 1)
+# data = data.to(dev)
+
+ori_data = data.clone().to(dev)
+for graph_num in range(times):
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+    x, y, edge_index = None, None, None
+
+    node_list = [i for i in range(ori_data.num_nodes)]
+    random.shuffle(node_list)
+    node_list = node_list[:ori_data.num_nodes // times]
+    if ori_data.x is not None:
+        x = ori_data.x[node_list]
+    if ori_data.y is not None:
+        y = ori_data.y[node_list]
+    if ori_data.edge_index is not None:
+        edge_index = subgraph(node_list, ori_data.edge_index, None, True, ori_data.num_nodes)[0]
+    data = Data(x=x, y=y, edge_index=edge_index).to(dev)
+    data = model.split_edges(data)
+    train(data)
+    print(f'complete {graph_num}th subgraph, sleep 1s...')
+    sleep(1)
+test_supervised(model, model.split_edges(ori_data))
+cluster_model, z = test_unsupervised(model, data)
+plot_graph(cluster_model, z)
