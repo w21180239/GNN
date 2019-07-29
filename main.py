@@ -32,6 +32,8 @@ channels = 3
 patience = 50
 early = True
 times = 2
+su_test = False
+un_test = False
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -39,6 +41,7 @@ parser.add_argument('--dataset', type=str, default='Cora')
 parser.add_argument('--encoder', type=str, default='GCN')
 parser.add_argument('--dropout', type=int, default=0.5)
 args = parser.parse_args()
+checkpoint_filename = f'checkpoint_{args.model}_{args.encoder}_{args.dataset}.pt'
 kwargs = {'GAE': GAE, 'VGAE': VGAE, 'ARGA': ARGA, 'ARGVA': ARGVA}
 encoder_args = {'GCN': GCNConv, 'GAT': GATConv, 'ARMA': ARMAConv, 'AGNN': AGNNConv}
 assert args.model in kwargs.keys()
@@ -160,7 +163,7 @@ def train(data):
     print('--------------------------------------------------\n\n')
     global epoch, learning_rate, weight_decay, model
     if early:
-        early_stopping = EarlyStopping(patience=patience)
+        early_stopping = EarlyStopping(patience=patience, filename=checkpoint_filename)
 
     for epoch in range(epoch):
         model.train()
@@ -189,10 +192,10 @@ def train(data):
         if early:
             early_stopping(test_loss, model)
             if early_stopping.early_stop:
-                print("Early stopping")
+                print("Early stop!")
                 break
     if early:
-        model.load_state_dict(torch.load('checkpoint.pt'))
+        model.load_state_dict(torch.load(checkpoint_filename))
 
 
 def test_unsupervised(model, data):
@@ -351,6 +354,8 @@ for graph_num in range(times):
     train(data)
     print(f'complete {graph_num}th subgraph, sleep 1s...')
     sleep(1)
-test_supervised(model, model.split_edges(ori_data))
-cluster_model, z = test_unsupervised(model, data)
-plot_graph(cluster_model, z)
+if su_test:
+    test_supervised(model, model.split_edges(ori_data))
+if un_test:
+    cluster_model, z = test_unsupervised(model, data)
+    plot_graph(cluster_model, z)
