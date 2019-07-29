@@ -8,14 +8,14 @@ import keras
 
 
 
-
+station_num = 207
 base_windows = 12
 windows = base_windows + 9  # n-1个输入 1个输出
 
-DF_adj = pd.DataFrame(pd.read_csv('Subway_net.csv', header=None))
+DF_adj = pd.DataFrame(pd.read_csv('METR_LA_stand_w8.csv', header=None))
 DF_adj[DF_adj > 0] = 1
 G = nx.Graph()
-labels = range(81)
+labels = range(station_num)
 #Network graph
 G = nx.Graph()
 G.add_nodes_from(labels)
@@ -35,7 +35,7 @@ nx.write_gpickle(G,'subway_g.gpickle')
 
 G = nx.read_gpickle('subway_g.gpickle')
 
-data_df = pd.DataFrame(pd.read_csv('Subway_instation_data_01.csv', header=None))
+data_df = pd.DataFrame(pd.read_csv('METR_LA.csv', header=None))
 data = data_df.values
 
 x_list = [data[i:i + windows, :] for i in range(data.shape[0] - windows + 1 - 3 * 288)]
@@ -60,27 +60,27 @@ y_list = [np.swapaxes(y, 0, 1) for y in y_list]
 
 ready = []
 for i in range(len(x_list)):
-    ready.extend([i % 288 for j in range(81)])
+    ready.extend([i % 288 for j in range(station_num)])
 time_stamp = keras.utils.to_categorical(ready, num_classes=None, dtype='float')
 for i in range(len(x_list)):
     hh = x_list[i]
-    jj = time_stamp[i*81:(i+1)*81,:]
+    jj = time_stamp[i*station_num:(i+1)*station_num,:]
     x_list[i] = np.concatenate([hh,jj],1)
 
 
 for i in range(3):
     pre_x_list[i] = [np.swapaxes(x, 0, 1) for x in pre_x_list[i]]
-    pre_y_list[i] = [np.reshape(y, (81, -1)) for y in pre_y_list[i]]
+    pre_y_list[i] = [np.reshape(y, (station_num, -1)) for y in pre_y_list[i]]
 
 
 for j in range(3):
     ready = []
     for i in range(len(pre_x_list[0])):
-        ready.extend([(i+start_time[j]) % 288 for z in range(81)])
+        ready.extend([(i+start_time[j]) % 288 for z in range(station_num)])
     time_stamp = keras.utils.to_categorical(ready, num_classes=None, dtype='float')
     for i in range(len(pre_x_list[0])):
         hh = pre_x_list[j][i]
-        jj = time_stamp[i*81:(i+1)*81,:]
+        jj = time_stamp[i*station_num:(i+1)*station_num,:]
         pre_x_list[j][i] = np.concatenate([hh,jj],1)
 
 tmp = np.array(pre_x_list[0])

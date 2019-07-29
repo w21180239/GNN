@@ -3,9 +3,9 @@ import pandas as pd
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.preprocessing import StandardScaler,RobustScaler
-from torch_geometric.data import DataLoader
-from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv
+from sklearn.preprocessing import StandardScaler,RobustScaler,MaxAbsScaler
+from torch_geometric.data import DataLoader,DataListLoader
+from torch_geometric.nn import GATConv, AGNNConv, ARMAConv, SplineConv,DataParallel
 
 
 from pytorchtools import EarlyStopping
@@ -13,7 +13,7 @@ import warnings
 
 warnings.filterwarnings\
     ('ignore')
-torch.cuda.set_device(3)
+# torch.cuda.set_device(3)
 check_path = 'checkpoint3.pt'
 batchsize = 100
 drop_rate = 0.1
@@ -198,7 +198,10 @@ class Net(torch.nn.Module):
             self.gplayers = torch.nn.ModuleList(
                 [GeniePathLayer(64) for i in range(2)])
 
-    def forward(self, x, edge_index):
+    def forward(self, data):
+        # print('Inside Model:  num graphs: {}, device: {}'.format(
+        #     data.num_graphs, data.batch.device))
+        x,edge_index = data.x,data.edge_index
         if mmodel == 'GAT':
             x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv1(x, edge_index))
@@ -208,12 +211,11 @@ class Net(torch.nn.Module):
             # x = F.elu(self.conv3(x, edge_index))
             # x = F.dropout(x, p=drop_rate, training=self.training)
             x = F.elu(self.conv4(x, edge_index))
-            x = x.view(-1,1,8,8)
-
-            x,_ = self.resnet(x)
-            # x = self.mlp(x)
-            # out_list = [head(x) for head in self.heads]
-            # x = torch.cat(out_list, 1)
+            # x = x.view(-1,1,8,8)
+            # x,_ = self.resnet(x)
+            x = self.mlp(x)
+            out_list = [head(x) for head in self.heads]
+            x = torch.cat(out_list, 1)
             # x = self.heads[0](x)
         elif mmodel == 'AGNN':
             x = F.dropout(x, p=drop_rate, training=self.training)
@@ -254,8 +256,8 @@ pre_data_list = []
 pre_data_list.append(torch.load('subway_data_pre_15.npz'))
 pre_data_list.append(torch.load('subway_data_pre_30.npz'))
 pre_data_list.append(torch.load('subway_data_pre_45.npz'))
-x_scaler = RobustScaler()
-y_scaler = RobustScaler()
+x_scaler = MaxAbsScaler()
+y_scaler = MaxAbsScaler()
 y = torch.cat([data.y[:,1].unsqueeze(1) for data in train_data_list], 0)
 x = torch.cat([data.x for data in train_data_list], 0)
 x_scaler.fit(x)
@@ -277,16 +279,18 @@ for pre in pre_data_list:
         data.x = torch.from_numpy(x).to(torch.float)
         data.y = data.y.squeeze()
 
-train_loader = DataLoader(
+train_loader = DataListLoader(
     train_data_list, batch_size=batchsize, shuffle=True)
 
-val_loader = DataLoader(
+val_loader = DataListLoader(
     val_data_list, batch_size=batchsize, shuffle=True)
 
-pre_loader_list = [DataLoader(pre, batch_size=1, shuffle=False) for pre in pre_data_list]
+pre_loader_list = [DataListLoader(pre, batch_size=1, shuffle=False) for pre in pre_data_list]
 del train_data_list, val_data_list, pre_data_list
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-model = Net(300, 3).to(device)
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+model = Net(300, 3)
+model = DataParallel(model)
+model = model.to(device)
 
 
 def train(loader,first,optimizer):
@@ -296,23 +300,25 @@ def train(loader,first,optimizer):
         if first:
             for i in range(20000):
                 optimizer.zero_grad()
-                out = model(data.x.to(device), data.edge_index.to(device))
-                loss = F.mse_loss(out, data.y.to(device), size_average=False)
+                out = model(data)
+                y = torch.cat([data.y for data in data]).to(out.device)
+                loss = F.mse_loss(out, y, size_average=False)
                 loss.backward()
                 optimizer.step()
                 tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
-                tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+                tmp_y = torch.from_numpy(y_scaler.inverse_transform(y.cpu().detach().numpy())).to(torch.float)
                 loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
                 print(f'{i}\t{loss_list[0] ** 0.5}\t{loss_list[1] ** 0.5}\t{loss_list[2] ** 0.5}')
-                if loss_list[0] ** 0.5 < 20 or loss_list[1] ** 0.5 < 20 or loss_list[2] ** 0.5 < 20:
+                if loss_list[0] ** 0.5 < 8 or loss_list[1] ** 0.5 < 8 or loss_list[2] ** 0.5 < 8:
                     return
         optimizer.zero_grad()
-        out = model(data.x.to(device), data.edge_index.to(device))
-        loss = F.mse_loss(out, data.y.to(device), size_average=False)
+        out = model(data)
+        y = torch.cat([data.y for data in data]).to(out.device)
+        loss = F.mse_loss(out, y, size_average=False)
         loss.backward()
         optimizer.step()
         tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
-        tmp_y = torch.from_numpy(y_scaler.inverse_transform(data.y.cpu().detach().numpy())).to(torch.float)
+        tmp_y = torch.from_numpy(y_scaler.inverse_transform(y.cpu().detach().numpy())).to(torch.float)
         loss_list = [F.mse_loss(tmp_out[:, i], tmp_y[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     # total_loss = y_scaler.inverse_transform(total_loss)
@@ -326,9 +332,10 @@ def test(loader):
 
     total_loss = []
     for data in loader:
-        out = model(data.x.to(device), data.edge_index.to(device))
+        out = model(data)
         tmp_out = torch.from_numpy(y_scaler.inverse_transform(out.cpu().detach().numpy())).to(torch.float)
-        loss_list = [F.mse_loss(tmp_out[:, i], data.y[:, i]).item() for i in range(3)]
+        y = torch.cat([data.y for data in data])
+        loss_list = [F.mse_loss(tmp_out[:, i], y[:, i]).item() for i in range(3)]
         total_loss.append(loss_list)
     total_loss = np.array(total_loss)
     total_loss = [(total_loss[:, i].sum() / len(total_loss)) ** 0.5 for i in range(3)]
@@ -344,9 +351,10 @@ def predict(loader_list,work):
         tmp = []
         total_loss = []
         for data in loader_list[i]:
-            out = model(data.x.to(device), data.edge_index.to(device))
+            out = model(data)
             out = y_scaler.inverse_transform(out.cpu().detach().numpy())
-            loss = F.mse_loss(torch.from_numpy(out[:, i]).to(torch.float), data.y).item()
+            y = torch.cat([data.y for data in data])
+            loss = F.mse_loss(torch.from_numpy(out[:, i]).to(torch.float), y).item()
             total_loss.append(loss)
             if work:
                 tmp.append(np.reshape(out[:, i], (-1, 1)))
