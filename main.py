@@ -25,10 +25,10 @@ from pytorchtools import EarlyStopping
 warnings.filterwarnings('ignore')
 
 early = True
-su_test = False
-un_test = False
+su_test = True
+un_test = True
 complete = True
-show_plot = True
+show_plot = False
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -181,7 +181,7 @@ def train(data):
             if early:
                 test_loss = test_loss + (1 / data.num_nodes) * model.kl_loss()
         if args.model in ['ARGA', 'ARGVA']:
-            loss = loss + args.dis_loss_para * model.discriminator_loss(z) + reg_loss_para * model.reg_loss(z)
+            loss = loss + args.dis_loss_para * model.discriminator_loss(z) + args.reg_loss_para * model.reg_loss(z)
             if early:
                 test_loss = test_loss + args.dis_loss_para * model.discriminator_loss(
                     z) + args.reg_loss_para * model.reg_loss(z)
@@ -326,14 +326,14 @@ def complete_graph(model, data, num_nodes=None):
     t = time()
     if num_nodes is None:
         num_nodes = data.num_nodes
-    data.to(dev)
-    model.to(dev)
     g = to_networkx(data)
     old_edge_num = g.number_of_edges()
+    data.to(dev)
+    model.to(dev)
     if show_plot:
         nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
-        plt.show()
         plt.savefig('old.eps', dpi=600, format='eps')
+        plt.show()
     whole_edge_test = torch.LongTensor(
         [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]])
     z = model.encode(data.x, data.edge_index)
@@ -351,10 +351,27 @@ def complete_graph(model, data, num_nodes=None):
         f'Original edge numbers:{old_edge_num}\t Completed edge numbers:{new_edge_num}\tIncrement:{new_edge_num - old_edge_num}')
     if show_plot:
         nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
-        plt.show()
         plt.savefig('new.eps', dpi=600, format='eps')
+        plt.show()
     nx.write_gpickle(g, 'complete_graph.gpickle')
     print(f'Used time:{time() - t}')
+
+
+def generate_subgraph(ori_data):
+    x, y, edge_index = None, None, None
+
+    node_list = [i for i in range(ori_data.num_nodes)]
+    random.shuffle(node_list)
+    node_list = node_list[:ori_data.num_nodes // args.subgraph_num]
+    if ori_data.x is not None:
+        x = ori_data.x[node_list]
+    if ori_data.y is not None:
+        y = ori_data.y[node_list]
+    if ori_data.edge_index is not None:
+        edge_index = subgraph(node_list, ori_data.edge_index, None, True, ori_data.num_nodes)[0]
+    data = Data(x=x, y=y, edge_index=edge_index).to(dev)
+    data = model.split_edges(data)
+    return data
 
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 path = osp.join(
@@ -380,26 +397,14 @@ model = kwargs[args.model](*parameter2model).to(dev)
 ori_data = data.clone().to(dev)
 for graph_num in range(args.subgraph_num):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
-    x, y, edge_index = None, None, None
-
-    node_list = [i for i in range(ori_data.num_nodes)]
-    random.shuffle(node_list)
-    node_list = node_list[:ori_data.num_nodes // args.subgraph_num]
-    if ori_data.x is not None:
-        x = ori_data.x[node_list]
-    if ori_data.y is not None:
-        y = ori_data.y[node_list]
-    if ori_data.edge_index is not None:
-        edge_index = subgraph(node_list, ori_data.edge_index, None, True, ori_data.num_nodes)[0]
-    data = Data(x=x, y=y, edge_index=edge_index).to(dev)
-    data = model.split_edges(data)
+    data = generate_subgraph(ori_data)
     train(data)
     print(f'complete {graph_num}th subgraph, sleep 1s...')
     sleep(1)
 if su_test:
-    test_supervised(model, model.split_edges(ori_data))
+    test_supervised(model, model.split_edges(ori_data.clone()))
 if un_test:
-    cluster_model, z = test_unsupervised(model, data)
+    cluster_model, z = test_unsupervised(model, model.split_edges(ori_data.clone()))
     plot_graph(cluster_model, z)
 if complete:
     complete_graph(model, ori_data)
