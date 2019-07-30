@@ -14,7 +14,7 @@ from sklearn.metrics import classification_report
 from sklearn.metrics.pairwise import pairwise_distances
 from torch.nn import Sequential as Seq, Linear as Lin, ReLU, BatchNorm1d as BN, Dropout
 from torch_geometric.data import Data
-from torch_geometric.datasets import Planetoid
+from torch_geometric.datasets import Planetoid, Reddit
 from torch_geometric.nn import GCNConv, GATConv, GAE, VGAE, ARMAConv, AGNNConv, ARGA, ARGVA
 from torch_geometric.utils import subgraph
 from xgboost import XGBClassifier
@@ -31,7 +31,7 @@ weight_decay = 0
 channels = 3
 patience = 50
 early = True
-times = 2
+times = 5
 su_test = False
 un_test = False
 
@@ -46,7 +46,7 @@ kwargs = {'GAE': GAE, 'VGAE': VGAE, 'ARGA': ARGA, 'ARGVA': ARGVA}
 encoder_args = {'GCN': GCNConv, 'GAT': GATConv, 'ARMA': ARMAConv, 'AGNN': AGNNConv}
 assert args.model in kwargs.keys()
 assert args.encoder in encoder_args.keys()
-assert args.dataset in ['Cora', 'CiteSeer', 'PubMed']
+assert args.dataset in ['Cora', 'CiteSeer', 'PubMed', 'Reddit']
 
 
 def MLP(channels):
@@ -320,7 +320,11 @@ def plot_graph(cluster_model, z):
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 path = osp.join(
     osp.dirname(osp.realpath(__file__)), '..', 'data', args.dataset)
-dataset = Planetoid(path, args.dataset)
+if args.dataset in ['Cora', 'CiteSeer', 'PubMed']:
+    dataset = Planetoid(path, args.dataset)
+elif args.dataset in ['Reddit']:
+    dataset = Reddit(path)
+exit(0)
 data = dataset[0]
 
 # 无监督
