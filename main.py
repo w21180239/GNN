@@ -25,10 +25,10 @@ from pytorchtools import EarlyStopping
 warnings.filterwarnings('ignore')
 
 early = True
-su_test = True
-un_test = True
+su_test = False
+un_test = False
 complete = True
-show_plot = False
+show_plot = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -311,6 +311,7 @@ def plot_graph(cluster_model, z):
         ax.set_ylabel('Y')
         ax.set_xlabel('X')
     elif z.shape[1] == 3:
+        from mpl_toolkits.mplot3d import Axes3D
         ax = plt.subplot(111, projection='3d')  # 创建一个三维的绘图工程
         ax.scatter(z[:, 0], z[:, 1], z[:, 2], c=c_list, s=20)
         ax.set_zlabel('Z')
@@ -333,7 +334,7 @@ def complete_graph(model, data, num_nodes=None):
     model.to(dev)
     if show_plot:
         nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
-        plt.savefig('old.eps', dpi=600, format='eps')
+        plt.savefig('old.eps', dpi=1000, format='eps')
         plt.show()
     whole_edge_test = torch.LongTensor(
         [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]])
@@ -399,7 +400,7 @@ ori_data = data.clone().to(dev)
 for graph_num in range(args.subgraph_num):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     data = generate_subgraph(ori_data)
-    train(data)
+    # train(data)
     print(f'complete {graph_num}th subgraph, sleep 1s...')
     sleep(1)
 if su_test:
@@ -408,4 +409,4 @@ if un_test:
     cluster_model, z = test_unsupervised(model, model.split_edges(ori_data.clone()))
     plot_graph(cluster_model, z)
 if complete:
-    complete_graph(model, ori_data)
+    complete_graph(model, ori_data, 10)
