@@ -5,6 +5,7 @@ import warnings
 from time import time, sleep
 
 import matplotlib.pyplot as plt
+import networkx as nx
 import torch
 import torch.nn.functional as F
 from sklearn import cluster as cl
@@ -16,30 +17,31 @@ from torch.nn import Sequential as Seq, Linear as Lin, ReLU, BatchNorm1d as BN, 
 from torch_geometric.data import Data
 from torch_geometric.datasets import Planetoid, Reddit
 from torch_geometric.nn import GCNConv, GATConv, GAE, VGAE, ARMAConv, AGNNConv, ARGA, ARGVA
-from torch_geometric.utils import subgraph
+from torch_geometric.utils import subgraph, to_networkx
 from xgboost import XGBClassifier
 
 from pytorchtools import EarlyStopping
 
 warnings.filterwarnings('ignore')
 
-discriminator_loss_para = 1
-reg_loss_para = 1
-epoch = 500
-learning_rate = 1e-3
-weight_decay = 0
-channels = 3
-patience = 50
 early = True
-times = 5
 su_test = False
 un_test = False
+complete = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
 parser.add_argument('--dataset', type=str, default='Cora')
 parser.add_argument('--encoder', type=str, default='GCN')
-parser.add_argument('--dropout', type=int, default=0.5)
+parser.add_argument('--dropout', type=float, default=0.5)
+parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--l2', type=float, default=0)
+parser.add_argument('--dis_loss_para', type=float, default=1)
+parser.add_argument('--reg_loss_para', type=float, default=1)
+parser.add_argument('--epoch', type=int, default=500)
+parser.add_argument('--hidden_channels', type=int, default=2)
+parser.add_argument('--patience', type=int, default=50)
+parser.add_argument('--subgraph_num', type=int, default=1)
 args = parser.parse_args()
 checkpoint_filename = f'checkpoint_{args.model}_{args.encoder}_{args.dataset}.pt'
 kwargs = {'GAE': GAE, 'VGAE': VGAE, 'ARGA': ARGA, 'ARGVA': ARGVA}
@@ -163,9 +165,9 @@ def train(data):
     print('--------------------------------------------------\n\n')
     global epoch, learning_rate, weight_decay, model
     if early:
-        early_stopping = EarlyStopping(patience=patience, filename=checkpoint_filename)
+        early_stopping = EarlyStopping(patience=args.patience, filename=checkpoint_filename)
 
-    for epoch in range(epoch):
+    for epoch in range(args.epoch):
         model.train()
         optimizer.zero_grad()
         z = model.encode(data.x, data.train_pos_edge_index)
@@ -177,10 +179,10 @@ def train(data):
             if early:
                 test_loss = test_loss + (1 / data.num_nodes) * model.kl_loss()
         if args.model in ['ARGA', 'ARGVA']:
-            loss = loss + discriminator_loss_para * model.discriminator_loss(z) + reg_loss_para * model.reg_loss(z)
+            loss = loss + args.dis_loss_para * model.discriminator_loss(z) + reg_loss_para * model.reg_loss(z)
             if early:
-                test_loss = test_loss + discriminator_loss_para * model.discriminator_loss(
-                    z) + reg_loss_para * model.reg_loss(z)
+                test_loss = test_loss + args.dis_loss_para * model.discriminator_loss(
+                    z) + args.reg_loss_para * model.reg_loss(z)
         loss.backward()
         optimizer.step()
         if not epoch % 5:
@@ -317,6 +319,28 @@ def plot_graph(cluster_model, z):
     plt.show()
 
 
+def complete_graph(model, data, num_nodes=None):
+    print('Completing graph...')
+    t = time()
+    if num_nodes is None:
+        num_nodes = data.num_nodes
+    data.to(dev)
+    model.to(dev)
+    g = to_networkx(data)
+    nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
+    plt.show()
+    whole_edge_test = torch.LongTensor(
+        [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]]).to(dev)
+    z = model.encode(data.x, data.edge_index)
+    sig = model.decoder(z, whole_edge_test, sigmoid=True)
+    category_mask = torch.gt(sig, 0.5)
+    new_edge = whole_edge_test[:, category_mask].detach().cpu().t().numpy()
+    g.add_edges_from(new_edge)
+    nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
+    plt.show()
+    nx.write_gpickle(g, 'complete_graph.gpickle')
+    print(f'Used time:{time() - t}')
+
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 path = osp.join(
     osp.dirname(osp.realpath(__file__)), '..', 'data', args.dataset)
@@ -324,13 +348,12 @@ if args.dataset in ['Cora', 'CiteSeer', 'PubMed']:
     dataset = Planetoid(path, args.dataset)
 elif args.dataset in ['Reddit']:
     dataset = Reddit(path)
-exit(0)
 data = dataset[0]
 
 # 无监督
-parameter2model = [Encoder(data.num_features, channels)]
+parameter2model = [Encoder(data.num_features, args.hidden_channels)]
 if args.model in ['ARGVA', 'ARGA']:
-    dis = Discriminator(channels)
+    dis = Discriminator(args.hidden_channels)
     parameter2model.append(dis)
 
 model = kwargs[args.model](*parameter2model).to(dev)
@@ -340,13 +363,13 @@ model = kwargs[args.model](*parameter2model).to(dev)
 # data = data.to(dev)
 
 ori_data = data.clone().to(dev)
-for graph_num in range(times):
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate, weight_decay=weight_decay)
+for graph_num in range(args.subgraph_num):
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     x, y, edge_index = None, None, None
 
     node_list = [i for i in range(ori_data.num_nodes)]
     random.shuffle(node_list)
-    node_list = node_list[:ori_data.num_nodes // times]
+    node_list = node_list[:ori_data.num_nodes // args.subgraph_num]
     if ori_data.x is not None:
         x = ori_data.x[node_list]
     if ori_data.y is not None:
@@ -363,3 +386,5 @@ if su_test:
 if un_test:
     cluster_model, z = test_unsupervised(model, data)
     plot_graph(cluster_model, z)
+if complete:
+    complete_graph(model, ori_data, 5)
