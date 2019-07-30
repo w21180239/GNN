@@ -28,6 +28,7 @@ early = True
 su_test = False
 un_test = False
 complete = True
+show_plot = False
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -327,8 +328,10 @@ def complete_graph(model, data, num_nodes=None):
     data.to(dev)
     model.to(dev)
     g = to_networkx(data)
-    nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
-    plt.show()
+    old_edge_num = g.number_of_edges()
+    if show_plot:
+        nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
+        plt.show()
     whole_edge_test = torch.LongTensor(
         [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]]).to(dev)
     z = model.encode(data.x, data.edge_index)
@@ -336,8 +339,12 @@ def complete_graph(model, data, num_nodes=None):
     category_mask = torch.gt(sig, 0.5)
     new_edge = whole_edge_test[:, category_mask].detach().cpu().t().numpy()
     g.add_edges_from(new_edge)
-    nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
-    plt.show()
+    new_edge_num = g.number_of_edges()
+    print(
+        f'Original edge numbers:{old_edge_num}\t Completed edge numbers:{new_edge_num}\tIncrement:{new_edge_num - old_edge_num}')
+    if show_plot:
+        nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
+        plt.show()
     nx.write_gpickle(g, 'complete_graph.gpickle')
     print(f'Used time:{time() - t}')
 
@@ -387,4 +394,4 @@ if un_test:
     cluster_model, z = test_unsupervised(model, data)
     plot_graph(cluster_model, z)
 if complete:
-    complete_graph(model, ori_data, 5)
+    complete_graph(model, ori_data)
