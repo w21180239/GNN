@@ -26,9 +26,13 @@ warnings.filterwarnings('ignore')
 
 early = True
 su_test = False
-un_test = False
+un_test = True
 complete = True
 show_plot = True
+
+plt.rcParams['savefig.dpi'] = 600  # 图片像素
+plt.rcParams['figure.dpi'] = 600  # 分辨率
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -43,7 +47,7 @@ parser.add_argument('--epoch', type=int, default=500)
 parser.add_argument('--hidden_channels', type=int, default=2)
 parser.add_argument('--patience', type=int, default=50)
 parser.add_argument('--subgraph_num', type=int, default=1)
-parser.add_argument('--batch', type=int, default=512)
+parser.add_argument('--batch', type=int, default=1024)
 args = parser.parse_args()
 checkpoint_filename = f'checkpoint_{args.model}_{args.encoder}_{args.dataset}.pt'
 kwargs = {'GAE': GAE, 'VGAE': VGAE, 'ARGA': ARGA, 'ARGVA': ARGVA}
@@ -206,7 +210,7 @@ def test_unsupervised(model, data):
     cluster_model = cl.KMeans(data.y.cpu().numpy().max() + 1)
 
     model.eval()
-    z = model.encode(data.x.to(dev), data.train_pos_edge_index.to(dev))
+    z = model.encode(data.x, data.train_pos_edge_index)
     z = z.cpu().detach().numpy()
     if data.y is None:
         cluster_model.fit(z)
@@ -216,14 +220,14 @@ def test_unsupervised(model, data):
         t = time()
         predict_label = cluster_model.fit_predict(data.x.cpu().detach().numpy())
         t_before = time() - t
-        X = pairwise_distances(data.x.cpu().detach().numpy(), metric='cosine')
+        X = pairwise_distances(data.x.cpu().detach().numpy(), metric='euclidean')
         before_embedding_1 = (true_label, predict_label)
         before_embedding_2 = (X, true_label)
 
         t = time()
         predict_label = cluster_model.fit_predict(z)
         t_after = time() - t
-        X = pairwise_distances(z, metric='cosine')
+        X = pairwise_distances(z, metric='euclidean')
 
         after_embedding_1 = (true_label, predict_label)
         after_embedding_2 = (X, true_label)
@@ -323,17 +327,24 @@ def plot_graph(cluster_model, z):
     plt.show()
 
 
-def complete_graph(model, data, num_nodes=None):
+def complete_graph(model, data, num_nodes=None, cluster_model=None):
     print('Completing graph...')
     t = time()
     if num_nodes is None:
         num_nodes = data.num_nodes
+
     g = to_networkx(data)
     old_edge_num = g.number_of_edges()
     data.to(dev)
     model.to(dev)
+    draw_args = {'G': g, 'with_labels': False, 'pos': nx.spring_layout(g), 'node_size': 5}
+    if cluster_model is not None:
+        label_pred = cluster_model.labels_  # 获取聚类标签
+        mark = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
+        c_list = [mark[i] for i in label_pred]
+        draw_args['node_color'] = c_list
     if show_plot:
-        nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
+        nx.draw(**draw_args)
         plt.savefig('old.eps', dpi=1000, format='eps')
         plt.show()
     whole_edge_test = torch.LongTensor(
@@ -352,7 +363,9 @@ def complete_graph(model, data, num_nodes=None):
     print(
         f'Original edge numbers:{old_edge_num}\t Completed edge numbers:{new_edge_num}\tIncrement:{new_edge_num - old_edge_num}')
     if show_plot:
-        nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
+        draw_args['pos'] = nx.spring_layout(g)
+        draw_args['G'] = g
+        nx.draw(**draw_args)
         plt.savefig('new.eps', dpi=600, format='eps')
         plt.show()
     nx.write_gpickle(g, 'complete_graph.gpickle')
@@ -400,13 +413,16 @@ ori_data = data.clone().to(dev)
 for graph_num in range(args.subgraph_num):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     data = generate_subgraph(ori_data)
-    # train(data)
+    train(data)
     print(f'complete {graph_num}th subgraph, sleep 1s...')
     sleep(1)
 if su_test:
     test_supervised(model, model.split_edges(ori_data.clone()))
+com_args = {'model': model, 'data': ori_data}
 if un_test:
     cluster_model, z = test_unsupervised(model, model.split_edges(ori_data.clone()))
     plot_graph(cluster_model, z)
+    com_args['cluster_model'] = cluster_model
+
 if complete:
-    complete_graph(model, ori_data, 10)
+    complete_graph(**com_args, num_nodes=5)
