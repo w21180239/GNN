@@ -316,6 +316,7 @@ def plot_graph(cluster_model, z):
         ax.set_zlabel('Z')
         ax.set_ylabel('Y')
         ax.set_xlabel('X')
+
     else:
         print('Wrong dimension!')
     plt.show()
