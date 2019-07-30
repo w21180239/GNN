@@ -28,7 +28,7 @@ early = True
 su_test = False
 un_test = False
 complete = True
-show_plot = False
+show_plot = True
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -43,6 +43,7 @@ parser.add_argument('--epoch', type=int, default=500)
 parser.add_argument('--hidden_channels', type=int, default=2)
 parser.add_argument('--patience', type=int, default=50)
 parser.add_argument('--subgraph_num', type=int, default=1)
+parser.add_argument('--batch', type=int, default=512)
 args = parser.parse_args()
 checkpoint_filename = f'checkpoint_{args.model}_{args.encoder}_{args.dataset}.pt'
 kwargs = {'GAE': GAE, 'VGAE': VGAE, 'ARGA': ARGA, 'ARGVA': ARGVA}
@@ -332,12 +333,18 @@ def complete_graph(model, data, num_nodes=None):
     if show_plot:
         nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
         plt.show()
+        plt.savefig('old.eps', dpi=600, format='eps')
     whole_edge_test = torch.LongTensor(
-        [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]]).to(dev)
+        [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]])
     z = model.encode(data.x, data.edge_index)
-    sig = model.decoder(z, whole_edge_test, sigmoid=True)
+    hh = []
+    for i in range(0, num_nodes ** 2, args.batch):
+        input = whole_edge_test[:, i:min(i + args.batch, num_nodes ** 2)].to(dev)
+        hh.append(model.decoder(z, input, sigmoid=True).detach().cpu())
+    sig = torch.cat(hh)
+    # sig = model.decoder(z, whole_edge_test, sigmoid=True)
     category_mask = torch.gt(sig, 0.5)
-    new_edge = whole_edge_test[:, category_mask].detach().cpu().t().numpy()
+    new_edge = whole_edge_test[:, category_mask].t().numpy()
     g.add_edges_from(new_edge)
     new_edge_num = g.number_of_edges()
     print(
@@ -345,6 +352,7 @@ def complete_graph(model, data, num_nodes=None):
     if show_plot:
         nx.draw(g, with_labels=False, pos=nx.spring_layout(g), node_size=5)
         plt.show()
+        plt.savefig('new.eps', dpi=600, format='eps')
     nx.write_gpickle(g, 'complete_graph.gpickle')
     print(f'Used time:{time() - t}')
 
