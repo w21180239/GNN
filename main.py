@@ -6,6 +6,7 @@ from time import time, sleep
 
 import matplotlib.pyplot as plt
 import networkx as nx
+import numpy as np
 import torch
 import torch.nn.functional as F
 from sklearn import cluster as cl
@@ -21,17 +22,17 @@ from torch_geometric.utils import subgraph, to_networkx
 from xgboost import XGBClassifier
 
 from pytorchtools import EarlyStopping
-
+from sklearn.metrics import roc_auc_score, average_precision_score
 warnings.filterwarnings('ignore')
 
 early = True
-su_test = False
-un_test = True
-complete = True
+su_test = True
+un_test = False
+complete = False
 show_plot = True
 
-plt.rcParams['savefig.dpi'] = 600  # 图片像素
-plt.rcParams['figure.dpi'] = 600  # 分辨率
+plt.rcParams['savefig.dpi'] = 2000  # 图片像素
+plt.rcParams['figure.dpi'] = 2000  # 分辨率
 
 
 parser = argparse.ArgumentParser()
@@ -167,8 +168,8 @@ class Discriminator(torch.nn.Module):
 
 
 def train(data):
-    print('Train:')
     print('--------------------------------------------------\n\n')
+    print('Train:')
     global epoch, learning_rate, weight_decay, model
     if early:
         early_stopping = EarlyStopping(patience=args.patience, filename=checkpoint_filename)
@@ -207,6 +208,8 @@ def train(data):
 
 
 def test_unsupervised(model, data):
+    print('\n\n--------------------------------------------------')
+    print('Unsupervised test...')
     cluster_model = cl.KMeans(data.y.cpu().numpy().max() + 1)
 
     model.eval()
@@ -263,7 +266,9 @@ def test_unsupervised(model, data):
     return cluster_model, z
 
 
-def test_supervised(model, data):
+def test_supervised_classification(model, data):
+    print('\n\n--------------------------------------------------')
+    print('Supervised classification test...')
     model.eval()
     z = model.encode(data.x, data.train_pos_edge_index)
     train_label = data.y[data.train_mask].cpu().detach().numpy()
@@ -303,8 +308,50 @@ def test_supervised(model, data):
     print(classification_report(test_label, ori_pre, target_names=target_names))
 
 
-def plot_graph(cluster_model, z):
+def test_supervised_link_prediction(data):
+    print('\n\n--------------------------------------------------')
+    print('Supervised link prediction test...')
+    pos_x = torch.cat([data.x.index_select(0, data.train_pos_edge_index[i, :]) for i in range(2)],
+                      1).cpu().detach().numpy()
+    pos_y = np.array([1 for i in range(pos_x.shape[0])])
+    neg_x = torch.cat([data.x.index_select(0, data.test_neg_edge_index[i, :].cuda()) for i in range(2)],
+                      1).cpu().detach().numpy()
+    neg_y = np.array([0 for i in range(neg_x.shape[0])])
+
+    train_x = np.concatenate([pos_x, neg_x], 0)
+    train_y = np.concatenate([pos_y, neg_y], 0)
+
+    pos_x = torch.cat([data.x.index_select(0, data.test_pos_edge_index[i, :]) for i in range(2)],
+                      1).cpu().detach().numpy()
+    pos_y = np.array([1 for i in range(pos_x.shape[0])])
+    neg_x = torch.cat([data.x.index_select(0, data.val_neg_edge_index[i, :].cuda()) for i in range(2)],
+                      1).cpu().detach().numpy()
+    neg_y = np.array([0 for i in range(neg_x.shape[0])])
+    test_x = np.concatenate([pos_x, neg_x], 0)
+    test_y = np.concatenate([pos_y, neg_y], 0)
+
+    print('\n\n\nNormal classifier')
+    classify_model = neighbors.KNeighborsClassifier()
+    classify_model.fit(train_x, train_y)
+    pre_y = classify_model.predict(test_x)
+
     print('--------------------------------------------------\n\n')
+    print(f'roc:{roc_auc_score(test_y, pre_y)}\tmean:{average_precision_score(test_y, pre_y)}')
+
+    print('\n\n\nStrong classifier')
+    classify_model = XGBClassifier(tree_method='gpu_hist', predictor='gpu_predictor')
+    classify_model.fit(train_x, train_y)
+    pre_y = classify_model.predict(test_x)
+
+    print('--------------------------------------------------\n\n')
+    print(f'roc:{roc_auc_score(test_y, pre_y)}\tmean:{average_precision_score(test_y, pre_y)}')
+
+
+
+
+
+def plot_graph(cluster_model, z):
+    print('\n\n--------------------------------------------------')
     print('Ploting...')
     label_pred = cluster_model.labels_  # 获取聚类标签
     mark = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w']
@@ -328,6 +375,7 @@ def plot_graph(cluster_model, z):
 
 
 def complete_graph(model, data, num_nodes=None, cluster_model=None):
+    print('\n\n--------------------------------------------------')
     print('Completing graph...')
     t = time()
     if num_nodes is None:
@@ -345,7 +393,7 @@ def complete_graph(model, data, num_nodes=None, cluster_model=None):
         draw_args['node_color'] = c_list
     if show_plot:
         nx.draw(**draw_args)
-        plt.savefig('old.eps', dpi=1000, format='eps')
+        # plt.savefig('old.eps',  format='eps')
         plt.show()
     whole_edge_test = torch.LongTensor(
         [[i % num_nodes for i in range(num_nodes ** 2)], [j // num_nodes for j in range(num_nodes ** 2)]])
@@ -366,7 +414,7 @@ def complete_graph(model, data, num_nodes=None, cluster_model=None):
         draw_args['pos'] = nx.spring_layout(g)
         draw_args['G'] = g
         nx.draw(**draw_args)
-        plt.savefig('new.eps', dpi=600, format='eps')
+        # plt.savefig('new.eps', format='eps')
         plt.show()
     nx.write_gpickle(g, 'complete_graph.gpickle')
     print(f'Used time:{time() - t}')
@@ -413,11 +461,13 @@ ori_data = data.clone().to(dev)
 for graph_num in range(args.subgraph_num):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     data = generate_subgraph(ori_data)
+
     train(data)
     print(f'complete {graph_num}th subgraph, sleep 1s...')
     sleep(1)
 if su_test:
-    test_supervised(model, model.split_edges(ori_data.clone()))
+    test_supervised_link_prediction(model.split_edges(ori_data.clone()))
+    test_supervised_classification(model, model.split_edges(ori_data.clone()))
 com_args = {'model': model, 'data': ori_data}
 if un_test:
     cluster_model, z = test_unsupervised(model, model.split_edges(ori_data.clone()))
