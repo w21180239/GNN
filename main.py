@@ -26,13 +26,14 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 warnings.filterwarnings('ignore')
 
 early = True
+link_test = False
 su_test = True
 un_test = False
 complete = False
 show_plot = True
 
-plt.rcParams['savefig.dpi'] = 2000  # 图片像素
-plt.rcParams['figure.dpi'] = 2000  # 分辨率
+plt.rcParams['savefig.dpi'] = 300  # 图片像素
+plt.rcParams['figure.dpi'] = 300  # 分辨率
 
 
 parser = argparse.ArgumentParser()
@@ -173,7 +174,8 @@ def train(data):
     global epoch, learning_rate, weight_decay, model
     if early:
         early_stopping = EarlyStopping(patience=args.patience, filename=checkpoint_filename)
-
+    best_roc = 0
+    best_mean = 0
     for epoch in range(args.epoch):
         model.train()
         optimizer.zero_grad()
@@ -197,6 +199,8 @@ def train(data):
             with torch.no_grad():
                 z = model.encode(data.x, data.train_pos_edge_index)
                 roc, mean = model.test(z, data.test_pos_edge_index, data.test_neg_edge_index)
+                best_roc = roc if roc > best_roc else best_roc
+                best_mean = mean if mean > best_mean else best_mean
                 print(f'graph_num:{graph_num}\tepoch:{epoch}\tloss:{loss}\troc:{roc}\tmean:{mean}')
         if early:
             early_stopping(test_loss, model)
@@ -205,6 +209,7 @@ def train(data):
                 break
     if early:
         model.load_state_dict(torch.load(checkpoint_filename))
+        print(f'Best loss:{-early_stopping.best_score}\nBest roc:{best_roc}\nBest mean auc:{best_mean}')
 
 
 def test_unsupervised(model, data):
@@ -308,7 +313,7 @@ def test_supervised_classification(model, data):
     print(classification_report(test_label, ori_pre, target_names=target_names))
 
 
-def test_supervised_link_prediction(data):
+def link_prediction_test(data):
     print('\n\n--------------------------------------------------')
     print('Supervised link prediction test...')
     pos_x = torch.cat([data.x.index_select(0, data.train_pos_edge_index[i, :]) for i in range(2)],
@@ -345,9 +350,6 @@ def test_supervised_link_prediction(data):
 
     print('--------------------------------------------------\n\n')
     print(f'roc:{roc_auc_score(test_y, pre_y)}\tmean:{average_precision_score(test_y, pre_y)}')
-
-
-
 
 
 def plot_graph(cluster_model, z):
@@ -444,7 +446,7 @@ if args.dataset in ['Cora', 'CiteSeer', 'PubMed']:
 elif args.dataset in ['Reddit']:
     dataset = Reddit(path)
 data = dataset[0]
-
+print(f'Graph information:\nNode:{data.num_nodes}\nEdge:{data.num_edges}\nFeature:{data.num_node_features}')
 # 无监督
 parameter2model = [Encoder(data.num_features, args.hidden_channels)]
 if args.model in ['ARGVA', 'ARGA']:
@@ -461,12 +463,12 @@ ori_data = data.clone().to(dev)
 for graph_num in range(args.subgraph_num):
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
     data = generate_subgraph(ori_data)
-
     train(data)
     print(f'complete {graph_num}th subgraph, sleep 1s...')
     sleep(1)
+if link_test:
+    link_prediction_test(model.split_edges(ori_data.clone()))
 if su_test:
-    test_supervised_link_prediction(model.split_edges(ori_data.clone()))
     test_supervised_classification(model, model.split_edges(ori_data.clone()))
 com_args = {'model': model, 'data': ori_data}
 if un_test:
