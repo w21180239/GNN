@@ -25,12 +25,12 @@ from pytorchtools import EarlyStopping
 from sklearn.metrics import roc_auc_score, average_precision_score
 warnings.filterwarnings('ignore')
 
-early = True
-link_test = False
-su_test = True
-un_test = False
-complete = False
-show_plot = True
+early = True  # 是否启用early stop
+link_test = True  # 是否进行传统方法link test任务以便进行对比
+su_test = True  # 是否对model进行supervised测试（classification）
+un_test = True  # 是否对model进行unsupervised测试（clustering）
+complete = True  # 是否进行matrix completion（对每对节点进行link prediction）
+show_plot = True  # 是否利用生成graph的图示（很耗时间）
 
 plt.rcParams['savefig.dpi'] = 300  # 图片像素
 plt.rcParams['figure.dpi'] = 300  # 分辨率
@@ -458,23 +458,23 @@ model = kwargs[args.model](*parameter2model).to(dev)
 # 半监督
 # model = Encoder(num_feature, 1)
 # data = data.to(dev)
+if __name__ == '__main__':
+    ori_data = data.clone().to(dev)
+    for graph_num in range(args.subgraph_num):
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
+        data = generate_subgraph(ori_data)
+        train(data)
+        print(f'complete {graph_num}th subgraph, sleep 1s...')
+        sleep(1)
+    if link_test:
+        link_prediction_test(model.split_edges(ori_data.clone()))
+    if su_test:
+        test_supervised_classification(model, model.split_edges(ori_data.clone()))
+    com_args = {'model': model, 'data': ori_data}
+    if un_test:
+        cluster_model, z = test_unsupervised(model, model.split_edges(ori_data.clone()))
+        plot_graph(cluster_model, z)
+        com_args['cluster_model'] = cluster_model
 
-ori_data = data.clone().to(dev)
-for graph_num in range(args.subgraph_num):
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.l2)
-    data = generate_subgraph(ori_data)
-    train(data)
-    print(f'complete {graph_num}th subgraph, sleep 1s...')
-    sleep(1)
-if link_test:
-    link_prediction_test(model.split_edges(ori_data.clone()))
-if su_test:
-    test_supervised_classification(model, model.split_edges(ori_data.clone()))
-com_args = {'model': model, 'data': ori_data}
-if un_test:
-    cluster_model, z = test_unsupervised(model, model.split_edges(ori_data.clone()))
-    plot_graph(cluster_model, z)
-    com_args['cluster_model'] = cluster_model
-
-if complete:
-    complete_graph(**com_args, num_nodes=5)
+    if complete:
+        complete_graph(**com_args, num_nodes=5)
