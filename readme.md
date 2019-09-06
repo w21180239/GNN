@@ -1,5 +1,5 @@
-#无监督的各种GNN（GAE等）
-##框架和库
+# 无监督的各种GNN（GAE等）
+## 框架和库
 本项目基于[Pytorch geometric](https://github.com/rusty1s/pytorch_geometric)实现，请根据官方指引安装最新版（可能要直接从github安装，直接pip安装可能版本不够新）
 
 其他库版本：
