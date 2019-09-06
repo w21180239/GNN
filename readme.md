@@ -60,3 +60,5 @@ python main.py
 ```
 python main.py --model GAE --encoder GAT --dataset Cora --hidden_channels 64
 ```
+## 自定义数据集
+本项目使用的数据集格式严格遵守pytorch geometric的规定，如需自定义数据集，请参考[官方文档](https://pytorch-geometric.readthedocs.io/en/latest/)
