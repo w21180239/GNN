@@ -10,7 +10,7 @@
 - pandas    v0.24.2
 - matplotlib     v2.2.3
 - numpy  v1.16.4
-##参数说明
+## 参数说明
 model
 > 使用什么无监督框架，可供选择的有：GAE, VGAE, ARGA, ARGVA
 
