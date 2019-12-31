@@ -23,18 +23,18 @@ from xgboost import XGBClassifier
 
 from pytorchtools import EarlyStopping
 from sklearn.metrics import roc_auc_score, average_precision_score
+
 warnings.filterwarnings('ignore')
 
 early = True  # 是否启用early stop
-link_test = True  # 是否进行传统方法link test任务以便进行对比
-su_test = True  # 是否对model进行supervised测试（classification）
-un_test = True  # 是否对model进行unsupervised测试（clustering）
-complete = True  # 是否进行matrix completion（对每对节点进行link prediction）
-show_plot = True  # 是否利用生成graph的图示（很耗时间）
+link_test = False  # 是否进行传统方法link test任务以便进行对比
+su_test = False  # 是否对model进行supervised测试（classification）
+un_test = False  # 是否对model进行unsupervised测试（clustering）
+complete = False  # 是否进行matrix completion（对每对节点进行link prediction）
+show_plot = False  # 是否利用生成graph的图示（很耗时间）
 
 plt.rcParams['savefig.dpi'] = 300  # 图片像素
 plt.rcParams['figure.dpi'] = 300  # 分辨率
-
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--model', type=str, default='GAE')
@@ -45,7 +45,7 @@ parser.add_argument('--lr', type=float, default=1e-3)
 parser.add_argument('--l2', type=float, default=0)
 parser.add_argument('--dis_loss_para', type=float, default=1)
 parser.add_argument('--reg_loss_para', type=float, default=1)
-parser.add_argument('--epoch', type=int, default=500)
+parser.add_argument('--epoch', type=int, default=1000)
 parser.add_argument('--hidden_channels', type=int, default=2)
 parser.add_argument('--patience', type=int, default=50)
 parser.add_argument('--subgraph_num', type=int, default=1)
@@ -72,7 +72,7 @@ class Encoder(torch.nn.Module):
         if args.encoder in ['GCN']:
             self.conv1 = GCNConv(in_channels, 2 * out_channels)
         elif args.encoder in ['GAT']:
-            self.conv1 = GATConv(in_channels, 8, heads=8, dropout=args.dropout)
+            self.conv1 = GATConv(in_channels, 32, heads=4, dropout=args.dropout)
         elif args.encoder in ['ARMA']:
             self.conv1 = ARMAConv(
                 in_channels,
@@ -91,7 +91,7 @@ class Encoder(torch.nn.Module):
             if args.encoder in ['GCN']:
                 self.conv2 = GCNConv(2 * out_channels, out_channels)
             elif args.encoder in ['GAT']:
-                self.conv2 = GATConv(8 * 8, out_channels, dropout=args.dropout)
+                self.conv2 = GATConv(8 * 16, out_channels, dropout=args.dropout)
             elif args.encoder in ['ARMA']:
                 self.conv2 = ARMAConv(
                     2 * out_channels,
@@ -423,19 +423,22 @@ def complete_graph(model, data, num_nodes=None, cluster_model=None):
 
 
 def generate_subgraph(ori_data):
-    x, y, edge_index = None, None, None
-
-    node_list = [i for i in range(ori_data.num_nodes)]
-    random.shuffle(node_list)
-    node_list = node_list[:ori_data.num_nodes // args.subgraph_num]
-    if ori_data.x is not None:
-        x = ori_data.x[node_list]
-    if ori_data.y is not None:
-        y = ori_data.y[node_list]
-    if ori_data.edge_index is not None:
-        edge_index = subgraph(node_list, ori_data.edge_index, None, True, ori_data.num_nodes)[0]
-    data = Data(x=x, y=y, edge_index=edge_index).to(dev)
-    data = model.split_edges(data)
+    if args.subgraph_num > 1:
+        x, y, edge_index = None, None, None
+        node_list = [i for i in range(ori_data.num_nodes)]
+        random.shuffle(node_list)
+        node_list = node_list[:ori_data.num_nodes // args.subgraph_num]
+        if ori_data.x is not None:
+            x = ori_data.x[node_list]
+        if ori_data.y is not None:
+            y = ori_data.y[node_list]
+        if ori_data.edge_index is not None:
+            edge_index = subgraph(node_list, ori_data.edge_index, None, True, ori_data.num_nodes)[0]
+        data = Data(x=x, y=y, edge_index=edge_index).to(dev)
+        data = model.split_edges(data)
+    else:
+        data = Data(x=ori_data.x, y=ori_data.y, edge_index=ori_data.edge_index).to(dev)
+        data = model.split_edges(data)
     return data
 
 dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -466,6 +469,12 @@ if __name__ == '__main__':
         train(data)
         print(f'complete {graph_num}th subgraph, sleep 1s...')
         sleep(1)
+    ori_data = model.split_edges(ori_data)
+    model.eval()
+    with torch.no_grad():
+        z = model.encode(ori_data.x, ori_data.train_pos_edge_index)
+        roc, mean = model.test(z, ori_data.test_pos_edge_index, ori_data.test_neg_edge_index)
+    print(f'Final test\tROC:{roc}\tAP:{mean}')
     if link_test:
         link_prediction_test(model.split_edges(ori_data.clone()))
     if su_test:
